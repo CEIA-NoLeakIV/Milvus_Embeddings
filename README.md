@@ -4,8 +4,8 @@ API para extração de embeddings faciais e busca por similaridade usando Milvus
 
 ## Modelos Disponíveis
 
-- **MobileNetV3 Large** - Leve e rápido (512 dims)
-- **ResNet50 CosFace** - Alta precisão (512 dims)
+- **MobileNetV3 Large**
+- **ResNet50 CosFace**
 
 ## Requisitos
 
