@@ -1,3 +1,21 @@
+#!/usr/bin/env python3
+"""
+Script para popular o Milvus com embeddings do dataset LFW
+==========================================================
+
+Este script:
+1. Carrega o modelo MobileNetV3 Large com TTA
+2. Percorre todas as imagens do dataset LFW
+3. Extrai os embeddings de cada imagem (1024 dims com TTA)
+4. Insere no Milvus Lite (salvo em data/milvus_face.db)
+
+Uso:
+    python populatemilvus.py
+    python populatemilvus.py --model cosface_resnet50
+    python populatemilvus.py --batch-size 64 --limit 1000
+    python populatemilvus.py --no-tta  # Para usar 512 dims sem TTA
+"""
+
 import os
 import sys
 import argparse

@@ -2,6 +2,7 @@
 Face Recognition API - Milvus Client
 =====================================
 Cliente para operações no banco de dados vetorial Milvus Lite.
+Suporta embeddings de 1024 dimensões (com TTA).
 """
 
 from datetime import datetime
@@ -16,49 +17,108 @@ class MilvusClient:
     """Cliente para operações no Milvus Lite."""
     
     def __init__(self, db_path: str = None, collection_name: str = None):
+        """
+        Inicializa o cliente Milvus.
+        
+        Args:
+            db_path: Caminho do banco de dados local
+            collection_name: Nome da collection
+        """
         self.db_path = db_path or Config.MILVUS_DB_PATH
         self.collection_name = collection_name or Config.COLLECTION_NAME
-        self.embedding_dim = Config.EMBEDDING_DIM
+        self.embedding_dim = Config.EMBEDDING_DIM  # 1024 com TTA
         
         # Conectar ao Milvus Lite
-        try:
-            self.client = PyMilvusClient(self.db_path)
-            print(f"✓ Conectado ao Milvus Lite: {self.db_path}")
-        except Exception as e:
-            print(f"✗ Erro ao conectar ao Milvus: {e}")
-            raise e
+        self.client = PyMilvusClient(self.db_path)
+        print(f"✓ Conectado ao Milvus Lite: {self.db_path}")
+        print(f"  Embedding dim: {self.embedding_dim}")
         
+        # Criar collection se não existir
         self._ensure_collection()
     
     def _ensure_collection(self):
+        """Garante que a collection existe com o schema correto."""
         if self.client.has_collection(self.collection_name):
+            print(f"✓ Collection '{self.collection_name}' já existe.")
             return
         
-        schema = self.client.create_schema(auto_id=True, enable_dynamic_field=False)
-        schema.add_field(field_name="id", datatype=DataType.INT64, is_primary=True)
-        schema.add_field(field_name="embedding", datatype=DataType.FLOAT_VECTOR, dim=self.embedding_dim)
-        schema.add_field(field_name="person_id", datatype=DataType.VARCHAR, max_length=256)
-        schema.add_field(field_name="image_path", datatype=DataType.VARCHAR, max_length=512)
-        schema.add_field(field_name="created_at", datatype=DataType.VARCHAR, max_length=32)
+        # Criar schema
+        schema = self.client.create_schema(
+            auto_id=True,
+            enable_dynamic_field=False
+        )
         
+        # Adicionar campos
+        schema.add_field(
+            field_name="id",
+            datatype=DataType.INT64,
+            is_primary=True
+        )
+        schema.add_field(
+            field_name="embedding",
+            datatype=DataType.FLOAT_VECTOR,
+            dim=self.embedding_dim  # 1024 com TTA
+        )
+        schema.add_field(
+            field_name="person_id",
+            datatype=DataType.VARCHAR,
+            max_length=256
+        )
+        schema.add_field(
+            field_name="image_path",
+            datatype=DataType.VARCHAR,
+            max_length=512
+        )
+        schema.add_field(
+            field_name="created_at",
+            datatype=DataType.VARCHAR,
+            max_length=32
+        )
+        
+        # Criar índice para busca
         index_params = self.client.prepare_index_params()
-        index_params.add_index(field_name="embedding", index_type="FLAT", metric_type="COSINE")
+        index_params.add_index(
+            field_name="embedding",
+            index_type="FLAT",
+            metric_type="COSINE"
+        )
         
+        # Criar collection
         self.client.create_collection(
             collection_name=self.collection_name,
             schema=schema,
             index_params=index_params
         )
-        print(f"✓ Collection '{self.collection_name}' criada!")
+        print(f"✓ Collection '{self.collection_name}' criada com dim={self.embedding_dim}!")
     
-    def insert(self, embeddings: List[np.ndarray], person_ids: List[str], image_paths: List[str]) -> int:
+    def insert(
+        self,
+        embeddings: List[np.ndarray],
+        person_ids: List[str],
+        image_paths: List[str]
+    ) -> int:
+        """
+        Insere embeddings no Milvus.
+        
+        Args:
+            embeddings: Lista de embeddings (numpy arrays de 1024 dims)
+            person_ids: Lista de IDs das pessoas
+            image_paths: Lista de caminhos das imagens
+            
+        Returns:
+            Número de registros inseridos
+        """
         if not embeddings:
             return 0
         
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Preparar dados
         data = []
         for emb, pid, path in zip(embeddings, person_ids, image_paths):
+            # Converter numpy para lista se necessário
             emb_list = emb.tolist() if isinstance(emb, np.ndarray) else emb
+            
             data.append({
                 "embedding": emb_list,
                 "person_id": str(pid),
@@ -66,70 +126,125 @@ class MilvusClient:
                 "created_at": timestamp
             })
         
-        self.client.insert(collection_name=self.collection_name, data=data)
-        print(f"✓ {len(data)} embeddings inseridos.")
-        return len(data)
-    
-    def search(self, query_embedding: np.ndarray, top_k: int = 5) -> List[Dict[str, Any]]:
-        """Busca os embeddings mais similares e converte para dicionário puro."""
-        query = query_embedding.tolist() if isinstance(query_embedding, np.ndarray) else query_embedding
+        # Inserir no Milvus
+        result = self.client.insert(
+            collection_name=self.collection_name,
+            data=data
+        )
         
-        # Realiza a busca
+        inserted_count = len(data)
+        print(f"✓ {inserted_count} embeddings inseridos.")
+        
+        return inserted_count
+    
+    def insert_single(
+        self,
+        embedding: np.ndarray,
+        person_id: str,
+        image_path: str
+    ) -> int:
+        """
+        Insere um único embedding.
+        
+        Args:
+            embedding: Embedding (numpy array de 1024 dims)
+            person_id: ID da pessoa
+            image_path: Caminho da imagem
+            
+        Returns:
+            Número de registros inseridos (1)
+        """
+        return self.insert(
+            embeddings=[embedding],
+            person_ids=[person_id],
+            image_paths=[image_path]
+        )
+    
+    def search(
+        self,
+        query_embedding: np.ndarray,
+        top_k: int = 5,
+        output_fields: List[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Busca os embeddings mais similares.
+        
+        Args:
+            query_embedding: Embedding de consulta (1024 dims)
+            top_k: Número de resultados
+            output_fields: Campos a retornar
+            
+        Returns:
+            Lista de resultados com distância e campos
+        """
+        if output_fields is None:
+            output_fields = ["person_id", "image_path", "created_at"]
+        
+        # Converter para lista se necessário
+        query_list = query_embedding.tolist() if isinstance(query_embedding, np.ndarray) else query_embedding
+        
         results = self.client.search(
             collection_name=self.collection_name,
-            data=[query],
+            data=[query_list],
             limit=top_k,
-            output_fields=["person_id", "image_path", "created_at"]
+            output_fields=output_fields
         )
         
-        formatted = []
-        if results and len(results) > 0:
-            for hit in results[0]:
-                # Tratamento robusto para 'Hit' object vs Dict
-                # Tenta acessar como atributo (objeto), se falhar, tenta como dict
-                try:
-                    # Tenta pegar entidade (formato objeto)
-                    entity = getattr(hit, 'entity', {})
-                    # Se entity for vazio, tenta pegar via get (formato dict)
-                    if not entity and hasattr(hit, 'get'):
-                        entity = hit.get('entity', {})
-
-                    # Extrair valores com fallback
-                    f_id = getattr(hit, 'id', hit.get('id') if hasattr(hit, 'get') else None)
-                    f_dist = getattr(hit, 'distance', hit.get('distance') if hasattr(hit, 'get') else 0.0)
-                    
-                    # Garantir que entity é dict
-                    if not isinstance(entity, dict):
-                         # Fallback forçado se entity não for dict acessível
-                         entity = {}
-
-                    formatted.append({
-                        "id": f_id,
-                        "distance": float(f_dist), # Garantir float nativo do Python
-                        "person_id": entity.get("person_id", "Unknown"),
-                        "image_path": entity.get("image_path", ""),
-                        "created_at": entity.get("created_at", "")
-                    })
-                except Exception as e:
-                    print(f"Erro ao processar hit: {e}")
-                    continue
-                    
-        return formatted
-
-    def query_by_person(self, person_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        return results[0] if results else []
+    
+    def get_collection_stats(self) -> Dict[str, Any]:
+        """
+        Retorna estatísticas da collection.
+        
+        Returns:
+            Dict com estatísticas
+        """
+        stats = self.client.get_collection_stats(self.collection_name)
+        info = self.client.describe_collection(self.collection_name)
+        
+        return {
+            "collection_name": self.collection_name,
+            "row_count": stats.get("row_count", 0),
+            "fields": info.get("fields", []),
+            "embedding_dim": self.embedding_dim
+        }
+    
+    def delete_collection(self):
+        """Remove a collection."""
+        if self.client.has_collection(self.collection_name):
+            self.client.drop_collection(self.collection_name)
+            print(f"✓ Collection '{self.collection_name}' removida.")
+    
+    def recreate_collection(self):
+        """Recria a collection (apaga dados existentes)."""
+        self.delete_collection()
+        self._ensure_collection()
+    
+    def query(
+        self,
+        filter_expr: str = "",
+        output_fields: List[str] = None,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Consulta registros com filtro.
+        
+        Args:
+            filter_expr: Expressão de filtro
+            output_fields: Campos a retornar
+            limit: Número máximo de resultados
+            
+        Returns:
+            Lista de registros
+        """
+        if output_fields is None:
+            output_fields = ["id", "person_id", "image_path", "created_at"]
+        
         results = self.client.query(
             collection_name=self.collection_name,
-            filter=f'person_id == "{person_id}"',
-            output_fields=["id", "person_id", "image_path", "created_at"],
+            filter=filter_expr,
+            output_fields=output_fields,
             limit=limit
         )
+        
         return results
-
-    def get_collection_stats(self) -> Dict[str, Any]:
-        if not self.client.has_collection(self.collection_name):
-            return {"row_count": 0, "exists": False}
-        stats = self.client.get_collection_stats(self.collection_name)
-        return {"exists": True, "row_count": stats.get("row_count", 0)}
-
-    def list_collections(self) -> List[str]:
-        return self.client.list_collections()
