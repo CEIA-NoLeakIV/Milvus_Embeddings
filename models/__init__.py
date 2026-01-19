@@ -20,7 +20,7 @@ class ModelFactory:
     
     Exemplo:
         >>> model = ModelFactory.create("mobilenetv3_large")
-        >>> embedding = model.extract_embedding_from_path("foto.jpg")
+        >>> embedding = model.extract_embedding_from_path("foto.jpg")  # 1024 dims com TTA
     """
     
     # Registro de modelos disponíveis
@@ -38,7 +38,8 @@ class ModelFactory:
         model_name: str,
         weight_path: Union[str, Path] = None,
         device=None,
-        use_cache: bool = True
+        use_cache: bool = True,
+        use_tta: bool = None
     ) -> BaseModel:
         """
         Cria ou retorna um modelo pelo nome.
@@ -48,6 +49,7 @@ class ModelFactory:
             weight_path: Caminho para os pesos (opcional, usa default se não informado)
             device: Dispositivo (opcional, usa Config.DEVICE se não informado)
             use_cache: Se True, reutiliza modelo já carregado
+            use_tta: Se True, usa TTA (1024 dims). Se None, usa Config.USE_TTA
             
         Returns:
             Instância do modelo
@@ -64,9 +66,16 @@ class ModelFactory:
                 f"Disponíveis: {available}"
             )
         
+        # Usar TTA do Config se não especificado
+        if use_tta is None:
+            use_tta = Config.USE_TTA
+        
+        # Chave do cache inclui configuração de TTA
+        cache_key = f"{model_name}_tta_{use_tta}"
+        
         # Verificar cache
-        if use_cache and model_name in cls._cache:
-            return cls._cache[model_name]
+        if use_cache and cache_key in cls._cache:
+            return cls._cache[cache_key]
         
         # Obter caminho dos pesos
         if weight_path is None:
@@ -80,12 +89,13 @@ class ModelFactory:
         model_class = cls._registry[model_name]
         model = model_class(
             weight_path=weight_path,
-            device=device
+            device=device,
+            use_tta=use_tta
         )
         
         # Adicionar ao cache
         if use_cache:
-            cls._cache[model_name] = model
+            cls._cache[cache_key] = model
         
         return model
     
@@ -105,17 +115,21 @@ class ModelFactory:
         cls._cache.clear()
     
     @classmethod
-    def is_loaded(cls, model_name: str) -> bool:
+    def is_loaded(cls, model_name: str, use_tta: bool = None) -> bool:
         """
         Verifica se um modelo está carregado no cache.
         
         Args:
             model_name: Nome do modelo
+            use_tta: Configuração de TTA
             
         Returns:
             True se o modelo está no cache
         """
-        return model_name in cls._cache
+        if use_tta is None:
+            use_tta = Config.USE_TTA
+        cache_key = f"{model_name}_tta_{use_tta}"
+        return cache_key in cls._cache
     
     @classmethod
     def register(cls, name: str, model_class: Type[BaseModel]):

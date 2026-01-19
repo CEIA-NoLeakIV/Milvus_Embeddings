@@ -16,7 +16,8 @@ class BaseModel(ABC):
         model_name: str,
         weight_path: Union[str, Path],
         device: torch.device = None,
-        embedding_dim: int = 512
+        embedding_dim: int = 512,
+        use_tta: bool = True
     ):
         """
         Inicializa o modelo base.
@@ -25,19 +26,32 @@ class BaseModel(ABC):
             model_name: Nome do modelo
             weight_path: Caminho para o arquivo de pesos
             device: Dispositivo (cuda/cpu)
-            embedding_dim: Dimensão do embedding
+            embedding_dim: Dimensão do embedding base (512)
+            use_tta: Se True, usa TTA e retorna 1024 dims. Se False, retorna 512 dims.
         """
         self.model_name = model_name
         self.weight_path = Path(weight_path)
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.embedding_dim = embedding_dim
+        self.use_tta = use_tta
+        
+        # Dimensão final do embedding (com ou sem TTA)
+        self.output_dim = embedding_dim * 2 if use_tta else embedding_dim
         
         # Modelo será carregado pelas subclasses
         self.model = None
         
-        # Transform padrão para imagens
+        # Transform padrão para imagens (original)
         self.transform = transforms.Compose([
             transforms.Resize((112, 112)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
+        ])
+        
+        # Transform com flip horizontal (para TTA)
+        self.transform_flip = transforms.Compose([
+            transforms.Resize((112, 112)),
+            transforms.RandomHorizontalFlip(p=1.0),
             transforms.ToTensor(),
             transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
         ])
@@ -91,8 +105,10 @@ class BaseModel(ABC):
         self.model.to(self.device)
         self.model.eval()
         
+        tta_status = "ON (1024 dims)" if self.use_tta else "OFF (512 dims)"
         print(f"✓ Modelo '{self.model_name}' carregado de: {self.weight_path}")
         print(f"  Device: {self.device}")
+        print(f"  TTA: {tta_status}")
     
     def preprocess(self, image: Image.Image) -> torch.Tensor:
         """
@@ -115,7 +131,7 @@ class BaseModel(ABC):
     
     def extract_embedding(self, image_tensor: torch.Tensor) -> np.ndarray:
         """
-        Extrai embedding de um tensor de imagem.
+        Extrai embedding de um tensor de imagem (sem TTA).
         
         Args:
             image_tensor: Tensor da imagem (1, 3, 112, 112)
@@ -132,25 +148,56 @@ class BaseModel(ABC):
     def extract_embedding_from_pil(self, image: Image.Image) -> np.ndarray:
         """
         Extrai embedding diretamente de uma imagem PIL.
+        Usa TTA se self.use_tta=True.
         
         Args:
             image: Imagem PIL
             
         Returns:
-            Embedding como numpy array (512,)
+            Embedding como numpy array (1024 com TTA, 512 sem TTA)
         """
-        tensor = self.preprocess(image)
-        return self.extract_embedding(tensor)
+        if self.use_tta:
+            return self.extract_embedding_with_tta(image)
+        else:
+            tensor = self.preprocess(image)
+            return self.extract_embedding(tensor)
+    
+    def extract_embedding_with_tta(self, image: Image.Image) -> np.ndarray:
+        """
+        Extrai embedding com TTA (Test-Time Augmentation).
+        Concatena embedding original + embedding flipped = 1024 dimensões.
+        
+        Args:
+            image: Imagem PIL
+            
+        Returns:
+            Embedding como numpy array (1024,)
+        """
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Preparar tensores
+        img_orig = self.transform(image).unsqueeze(0).to(self.device)
+        img_flip = self.transform_flip(image).unsqueeze(0).to(self.device)
+        
+        with torch.no_grad():
+            f_orig = self.model(img_orig)
+            f_flip = self.model(img_flip)
+            # Concatenar: 512 + 512 = 1024 dimensões
+            embedding = torch.cat([f_orig, f_flip], dim=1).squeeze().cpu().numpy()
+        
+        return embedding
     
     def extract_embedding_from_path(self, image_path: Union[str, Path]) -> np.ndarray:
         """
         Extrai embedding de um arquivo de imagem.
+        Usa TTA se self.use_tta=True.
         
         Args:
             image_path: Caminho para a imagem
             
         Returns:
-            Embedding como numpy array (512,)
+            Embedding como numpy array (1024 com TTA, 512 sem TTA)
         """
         image = Image.open(image_path).convert('RGB')
         return self.extract_embedding_from_pil(image)
@@ -160,5 +207,7 @@ class BaseModel(ABC):
             f"{self.__class__.__name__}("
             f"model_name='{self.model_name}', "
             f"embedding_dim={self.embedding_dim}, "
+            f"output_dim={self.output_dim}, "
+            f"use_tta={self.use_tta}, "
             f"device={self.device})"
         )
