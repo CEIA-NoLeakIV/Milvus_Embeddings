@@ -19,19 +19,19 @@ class MilvusClient:
     def __init__(self, db_path: str = None, collection_name: str = None):
         """
         Inicializa o cliente Milvus.
-        
-        Args:
-            db_path: Caminho do banco de dados local
-            collection_name: Nome da collection
         """
         self.db_path = db_path or Config.MILVUS_DB_PATH
         self.collection_name = collection_name or Config.COLLECTION_NAME
-        self.embedding_dim = Config.EMBEDDING_DIM  # 1024 com TTA
+        self.embedding_dim = Config.EMBEDDING_DIM
         
         # Conectar ao Milvus Lite
-        self.client = PyMilvusClient(self.db_path)
-        print(f"✓ Conectado ao Milvus Lite: {self.db_path}")
-        print(f"  Embedding dim: {self.embedding_dim}")
+        try:
+            self.client = PyMilvusClient(self.db_path)
+            print(f"✓ Conectado ao Milvus Lite: {self.db_path}")
+            print(f"  Embedding dim: {self.embedding_dim}")
+        except Exception as e:
+            print(f"✗ Erro ao conectar no Milvus: {e}")
+            raise e
         
         # Criar collection se não existir
         self._ensure_collection()
@@ -39,7 +39,7 @@ class MilvusClient:
     def _ensure_collection(self):
         """Garante que a collection existe com o schema correto."""
         if self.client.has_collection(self.collection_name):
-            print(f"✓ Collection '{self.collection_name}' já existe.")
+            # print(f"✓ Collection '{self.collection_name}' já existe.")
             return
         
         # Criar schema
@@ -49,31 +49,11 @@ class MilvusClient:
         )
         
         # Adicionar campos
-        schema.add_field(
-            field_name="id",
-            datatype=DataType.INT64,
-            is_primary=True
-        )
-        schema.add_field(
-            field_name="embedding",
-            datatype=DataType.FLOAT_VECTOR,
-            dim=self.embedding_dim  # 1024 com TTA
-        )
-        schema.add_field(
-            field_name="person_id",
-            datatype=DataType.VARCHAR,
-            max_length=256
-        )
-        schema.add_field(
-            field_name="image_path",
-            datatype=DataType.VARCHAR,
-            max_length=512
-        )
-        schema.add_field(
-            field_name="created_at",
-            datatype=DataType.VARCHAR,
-            max_length=32
-        )
+        schema.add_field(field_name="id", datatype=DataType.INT64, is_primary=True)
+        schema.add_field(field_name="embedding", datatype=DataType.FLOAT_VECTOR, dim=self.embedding_dim)
+        schema.add_field(field_name="person_id", datatype=DataType.VARCHAR, max_length=256)
+        schema.add_field(field_name="image_path", datatype=DataType.VARCHAR, max_length=512)
+        schema.add_field(field_name="created_at", datatype=DataType.VARCHAR, max_length=32)
         
         # Criar índice para busca
         index_params = self.client.prepare_index_params()
@@ -97,17 +77,7 @@ class MilvusClient:
         person_ids: List[str],
         image_paths: List[str]
     ) -> int:
-        """
-        Insere embeddings no Milvus.
-        
-        Args:
-            embeddings: Lista de embeddings (numpy arrays de 1024 dims)
-            person_ids: Lista de IDs das pessoas
-            image_paths: Lista de caminhos das imagens
-            
-        Returns:
-            Número de registros inseridos
-        """
+        """Insere embeddings no Milvus."""
         if not embeddings:
             return 0
         
@@ -127,38 +97,18 @@ class MilvusClient:
             })
         
         # Inserir no Milvus
-        result = self.client.insert(
+        self.client.insert(
             collection_name=self.collection_name,
             data=data
         )
         
         inserted_count = len(data)
-        print(f"✓ {inserted_count} embeddings inseridos.")
-        
+        # print(f"✓ {inserted_count} embeddings inseridos.")
         return inserted_count
     
-    def insert_single(
-        self,
-        embedding: np.ndarray,
-        person_id: str,
-        image_path: str
-    ) -> int:
-        """
-        Insere um único embedding.
-        
-        Args:
-            embedding: Embedding (numpy array de 1024 dims)
-            person_id: ID da pessoa
-            image_path: Caminho da imagem
-            
-        Returns:
-            Número de registros inseridos (1)
-        """
-        return self.insert(
-            embeddings=[embedding],
-            person_ids=[person_id],
-            image_paths=[image_path]
-        )
+    def insert_single(self, embedding: np.ndarray, person_id: str, image_path: str) -> int:
+        """Insere um único embedding."""
+        return self.insert([embedding], [person_id], [image_path])
     
     def search(
         self,
@@ -167,20 +117,13 @@ class MilvusClient:
         output_fields: List[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Busca os embeddings mais similares.
-        
-        Args:
-            query_embedding: Embedding de consulta (1024 dims)
-            top_k: Número de resultados
-            output_fields: Campos a retornar
-            
-        Returns:
-            Lista de resultados com distância e campos
+        Busca os embeddings mais similares e converte para dicionário puro.
+        Isso corrige o erro 'Hit is not JSON serializable'.
         """
         if output_fields is None:
             output_fields = ["person_id", "image_path", "created_at"]
         
-        # Converter para lista se necessário
+        # Converter numpy para lista se necessário
         query_list = query_embedding.tolist() if isinstance(query_embedding, np.ndarray) else query_embedding
         
         results = self.client.search(
@@ -190,15 +133,62 @@ class MilvusClient:
             output_fields=output_fields
         )
         
-        return results[0] if results else []
-    
-    def get_collection_stats(self) -> Dict[str, Any]:
-        """
-        Retorna estatísticas da collection.
+        # Formatar resultados para JSON serializable
+        formatted_results = []
+        if results and len(results) > 0:
+            for hit in results[0]:
+                # Criar dicionário base com tipos nativos do Python
+                item = {
+                    "id": hit.id,
+                    "distance": float(hit.distance)  # Garante float do Python
+                }
+                
+                # Adicionar campos extras (entity)
+                # O objeto Hit possui a propriedade entity que contém os campos solicitados
+                entity = getattr(hit, 'entity', {})
+                
+                # Extrair campos da entidade de forma segura
+                for field in output_fields:
+                    if hasattr(entity, 'get'):
+                        item[field] = entity.get(field)
+                
+                formatted_results.append(item)
         
-        Returns:
-            Dict com estatísticas
+        return formatted_results
+    
+    def query(
+        self,
+        filter_expr: str = "",
+        output_fields: List[str] = None,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Consulta registros com filtro genérico."""
+        if output_fields is None:
+            output_fields = ["id", "person_id", "image_path", "created_at"]
+        
+        results = self.client.query(
+            collection_name=self.collection_name,
+            filter=filter_expr,
+            output_fields=output_fields,
+            limit=limit
+        )
+        return results
+
+    def query_by_person(self, person_id: str, limit: int = 100) -> List[Dict[str, Any]]:
         """
+        Consulta embeddings por person_id.
+        Corrige o erro 'MilvusClient object has no attribute query_by_person'.
+        """
+        return self.query(
+            filter_expr=f'person_id == "{person_id}"',
+            limit=limit
+        )
+
+    def get_collection_stats(self) -> Dict[str, Any]:
+        """Retorna estatísticas da collection."""
+        if not self.client.has_collection(self.collection_name):
+            return {"row_count": 0}
+            
         stats = self.client.get_collection_stats(self.collection_name)
         info = self.client.describe_collection(self.collection_name)
         
@@ -214,37 +204,12 @@ class MilvusClient:
         if self.client.has_collection(self.collection_name):
             self.client.drop_collection(self.collection_name)
             print(f"✓ Collection '{self.collection_name}' removida.")
-    
+
+    # Alias para compatibilidade com scripts que usam drop_collection
+    def drop_collection(self):
+        self.delete_collection()
+
     def recreate_collection(self):
         """Recria a collection (apaga dados existentes)."""
         self.delete_collection()
         self._ensure_collection()
-    
-    def query(
-        self,
-        filter_expr: str = "",
-        output_fields: List[str] = None,
-        limit: int = 10
-    ) -> List[Dict[str, Any]]:
-        """
-        Consulta registros com filtro.
-        
-        Args:
-            filter_expr: Expressão de filtro
-            output_fields: Campos a retornar
-            limit: Número máximo de resultados
-            
-        Returns:
-            Lista de registros
-        """
-        if output_fields is None:
-            output_fields = ["id", "person_id", "image_path", "created_at"]
-        
-        results = self.client.query(
-            collection_name=self.collection_name,
-            filter=filter_expr,
-            output_fields=output_fields,
-            limit=limit
-        )
-        
-        return results
