@@ -29,7 +29,14 @@ class Config:
     # ===========================================
     MILVUS_DB_PATH = str(DATA_DIR / "milvus_face.db")
     COLLECTION_NAME = "face_embeddings"
-    EMBEDDING_DIM = 512
+    
+    # EMBEDDING_DIM = 1024 (com TTA: 512 original + 512 flipped)
+    EMBEDDING_DIM = 1024
+    
+    # ===========================================
+    # TTA (Test-Time Augmentation)
+    # ===========================================
+    USE_TTA = True  # Se True, usa TTA e gera embeddings de 1024 dims
     
     # ===========================================
     # Modelos
@@ -89,5 +96,6 @@ class Config:
         print(f"  MILVUS_DB:      {cls.MILVUS_DB_PATH}")
         print(f"  COLLECTION:     {cls.COLLECTION_NAME}")
         print(f"  EMBEDDING_DIM:  {cls.EMBEDDING_DIM}")
+        print(f"  USE_TTA:        {cls.USE_TTA}")
         print(f"  MODELS:         {cls.AVAILABLE_MODELS}")
         print("=" * 50)

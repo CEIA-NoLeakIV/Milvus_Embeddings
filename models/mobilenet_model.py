@@ -1,9 +1,3 @@
-"""
-Face Recognition - MobileNetV3 Large Model
-===========================================
-Wrapper para o modelo MobileNetV3 Large para extração de embeddings faciais.
-"""
-
 import sys
 from pathlib import Path
 from typing import Union
@@ -24,7 +18,8 @@ class MobileNetModel(BaseModel):
     
     Características:
         - Arquitetura: MobileNetV3 Large
-        - Dimensão do embedding: 512
+        - Dimensão do embedding base: 512
+        - Com TTA: 1024 dimensões (512 original + 512 flipped)
         - Entrada: Imagens 112x112 RGB
         - Normalização: (0.5, 0.5, 0.5)
     """
@@ -33,7 +28,8 @@ class MobileNetModel(BaseModel):
         self,
         weight_path: Union[str, Path],
         device: torch.device = None,
-        embedding_dim: int = 512
+        embedding_dim: int = 512,
+        use_tta: bool = True
     ):
         """
         Inicializa o modelo MobileNetV3 Large.
@@ -41,13 +37,15 @@ class MobileNetModel(BaseModel):
         Args:
             weight_path: Caminho para o arquivo .ckpt com os pesos
             device: Dispositivo para execução (cuda/cpu)
-            embedding_dim: Dimensão do embedding (default: 512)
+            embedding_dim: Dimensão do embedding base (default: 512)
+            use_tta: Se True, usa TTA e retorna 1024 dims (default: True)
         """
         super().__init__(
             model_name="mobilenetv3_large",
             weight_path=weight_path,
             device=device,
-            embedding_dim=embedding_dim
+            embedding_dim=embedding_dim,
+            use_tta=use_tta
         )
     
     def _create_architecture(self) -> torch.nn.Module:
@@ -66,7 +64,8 @@ class MobileNetModel(BaseModel):
 # ===========================================
 def create_mobilenet_model(
     weight_path: Union[str, Path],
-    device: torch.device = None
+    device: torch.device = None,
+    use_tta: bool = True
 ) -> MobileNetModel:
     """
     Cria uma instância do modelo MobileNetV3 Large.
@@ -74,8 +73,9 @@ def create_mobilenet_model(
     Args:
         weight_path: Caminho para os pesos
         device: Dispositivo
+        use_tta: Se True, usa TTA (1024 dims)
         
     Returns:
         Instância de MobileNetModel
     """
-    return MobileNetModel(weight_path=weight_path, device=device)
+    return MobileNetModel(weight_path=weight_path, device=device, use_tta=use_tta)
