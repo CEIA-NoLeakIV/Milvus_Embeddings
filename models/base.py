@@ -1,9 +1,3 @@
-"""
-Face Recognition - Base Model
-==============================
-Classe base abstrata para os modelos de extração de embeddings.
-"""
-
 from abc import ABC, abstractmethod
 from typing import Union
 from pathlib import Path
@@ -73,8 +67,8 @@ class BaseModel(ABC):
         # Criar arquitetura
         self.model = self._create_architecture()
         
-        # Carregar checkpoint
-        checkpoint = torch.load(self.weight_path, map_location=self.device)
+        # Carregar checkpoint (weights_only=False para compatibilidade com PyTorch 2.6+)
+        checkpoint = torch.load(self.weight_path, map_location=self.device, weights_only=False)
         
         # Extrair state_dict
         if 'model' in checkpoint:
