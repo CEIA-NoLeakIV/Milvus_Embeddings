@@ -1,11 +1,21 @@
 from abc import ABC, abstractmethod
-from typing import Union
+from typing import Union, BinaryIO
 from pathlib import Path
 
 import numpy as np
 import torch
 from PIL import Image
-from torchvision import transforms
+
+# Importar o módulo de pré-processamento centralizado
+# O arquivo preprocessing.py deve estar na raiz do projeto
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from preprocessing import (
+    preprocess_image,
+    extract_embedding_standardized,
+    load_image_standardized
+)
 
 
 class BaseModel(ABC):
@@ -27,7 +37,7 @@ class BaseModel(ABC):
             weight_path: Caminho para o arquivo de pesos
             device: Dispositivo (cuda/cpu)
             embedding_dim: Dimensão do embedding base (512)
-            use_tta: Se True, usa TTA e retorna 1024 dims. Se False, retorna 512 dims.
+            use_tta: Se True, usa TTA e retorna 1024 dims
         """
         self.model_name = model_name
         self.weight_path = Path(weight_path)
@@ -35,53 +45,29 @@ class BaseModel(ABC):
         self.embedding_dim = embedding_dim
         self.use_tta = use_tta
         
-        # Dimensão final do embedding (com ou sem TTA)
+        # Dimensão final do embedding
         self.output_dim = embedding_dim * 2 if use_tta else embedding_dim
         
         # Modelo será carregado pelas subclasses
         self.model = None
-        
-        # Transform padrão para imagens (original)
-        self.transform = transforms.Compose([
-            transforms.Resize((112, 112)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
-        ])
-        
-        # Transform com flip horizontal (para TTA)
-        self.transform_flip = transforms.Compose([
-            transforms.Resize((112, 112)),
-            transforms.RandomHorizontalFlip(p=1.0),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
-        ])
         
         # Carregar modelo
         self._load_model()
     
     @abstractmethod
     def _create_architecture(self) -> torch.nn.Module:
-        """
-        Cria a arquitetura do modelo.
-        Deve ser implementado pelas subclasses.
-        
-        Returns:
-            Modelo PyTorch
-        """
+        """Cria a arquitetura do modelo. Implementado pelas subclasses."""
         pass
     
     def _load_model(self):
         """Carrega o modelo e os pesos."""
-        # Verificar se arquivo de pesos existe
         if not self.weight_path.exists():
-            raise FileNotFoundError(
-                f"Arquivo de pesos não encontrado: {self.weight_path}"
-            )
+            raise FileNotFoundError(f"Arquivo de pesos não encontrado: {self.weight_path}")
         
         # Criar arquitetura
         self.model = self._create_architecture()
         
-        # Carregar checkpoint (weights_only=False para compatibilidade com PyTorch 2.6+)
+        # Carregar checkpoint
         checkpoint = torch.load(self.weight_path, map_location=self.device, weights_only=False)
         
         # Extrair state_dict
@@ -92,7 +78,7 @@ class BaseModel(ABC):
         else:
             state_dict = checkpoint
         
-        # Remover prefixo 'module.' se existir (de treinos com DataParallel/DDP)
+        # Remover prefixo 'module.' se existir
         new_state_dict = {}
         for key, value in state_dict.items():
             new_key = key.replace('module.', '')
@@ -101,7 +87,7 @@ class BaseModel(ABC):
         # Carregar pesos
         self.model.load_state_dict(new_state_dict)
         
-        # Mover para device e colocar em modo de avaliação
+        # Mover para device e modo avaliação
         self.model.to(self.device)
         self.model.eval()
         
@@ -110,97 +96,77 @@ class BaseModel(ABC):
         print(f"  Device: {self.device}")
         print(f"  TTA: {tta_status}")
     
-    def preprocess(self, image: Image.Image) -> torch.Tensor:
-        """
-        Preprocessa uma imagem PIL.
-        
-        Args:
-            image: Imagem PIL (RGB)
-            
-        Returns:
-            Tensor preprocessado
-        """
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        
-        tensor = self.transform(image)
-        tensor = tensor.unsqueeze(0)  # Adicionar dimensão de batch
-        tensor = tensor.to(self.device)
-        
-        return tensor
-    
-    def extract_embedding(self, image_tensor: torch.Tensor) -> np.ndarray:
-        """
-        Extrai embedding de um tensor de imagem (sem TTA).
-        
-        Args:
-            image_tensor: Tensor da imagem (1, 3, 112, 112)
-            
-        Returns:
-            Embedding como numpy array (512,)
-        """
-        with torch.no_grad():
-            embedding = self.model(image_tensor)
-            embedding = embedding.squeeze().cpu().numpy()
-        
-        return embedding
-    
-    def extract_embedding_from_pil(self, image: Image.Image) -> np.ndarray:
-        """
-        Extrai embedding diretamente de uma imagem PIL.
-        Usa TTA se self.use_tta=True.
-        
-        Args:
-            image: Imagem PIL
-            
-        Returns:
-            Embedding como numpy array (1024 com TTA, 512 sem TTA)
-        """
-        if self.use_tta:
-            return self.extract_embedding_with_tta(image)
-        else:
-            tensor = self.preprocess(image)
-            return self.extract_embedding(tensor)
-    
-    def extract_embedding_with_tta(self, image: Image.Image) -> np.ndarray:
-        """
-        Extrai embedding com TTA (Test-Time Augmentation).
-        Concatena embedding original + embedding flipped = 1024 dimensões.
-        
-        Args:
-            image: Imagem PIL
-            
-        Returns:
-            Embedding como numpy array (1024,)
-        """
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        
-        # Preparar tensores
-        img_orig = self.transform(image).unsqueeze(0).to(self.device)
-        img_flip = self.transform_flip(image).unsqueeze(0).to(self.device)
-        
-        with torch.no_grad():
-            f_orig = self.model(img_orig)
-            f_flip = self.model(img_flip)
-            # Concatenar: 512 + 512 = 1024 dimensões
-            embedding = torch.cat([f_orig, f_flip], dim=1).squeeze().cpu().numpy()
-        
-        return embedding
+    # =====================================================
+    # MÉTODOS DE EXTRAÇÃO - TODOS USAM PREPROCESSING CENTRALIZADO
+    # =====================================================
     
     def extract_embedding_from_path(self, image_path: Union[str, Path]) -> np.ndarray:
         """
         Extrai embedding de um arquivo de imagem.
-        Usa TTA se self.use_tta=True.
-        
-        Args:
-            image_path: Caminho para a imagem
-            
-        Returns:
-            Embedding como numpy array (1024 com TTA, 512 sem TTA)
+        USA PREPROCESSING CENTRALIZADO.
         """
-        image = Image.open(image_path).convert('RGB')
-        return self.extract_embedding_from_pil(image)
+        return extract_embedding_standardized(
+            self,
+            file_path=image_path,
+            use_tta=self.use_tta
+        )
+    
+    def extract_embedding_from_pil(self, image: Image.Image) -> np.ndarray:
+        """
+        Extrai embedding de uma imagem PIL.
+        USA PREPROCESSING CENTRALIZADO.
+        """
+        return extract_embedding_standardized(
+            self,
+            pil_image=image,
+            use_tta=self.use_tta
+        )
+    
+    def extract_embedding_from_bytes(self, file_bytes: bytes) -> np.ndarray:
+        """
+        Extrai embedding de bytes de imagem.
+        USA PREPROCESSING CENTRALIZADO.
+        """
+        return extract_embedding_standardized(
+            self,
+            file_bytes=file_bytes,
+            use_tta=self.use_tta
+        )
+    
+    def extract_embedding_from_stream(self, file_stream: BinaryIO) -> np.ndarray:
+        """
+        Extrai embedding de um stream de arquivo.
+        USA PREPROCESSING CENTRALIZADO.
+        """
+        return extract_embedding_standardized(
+            self,
+            file_stream=file_stream,
+            use_tta=self.use_tta
+        )
+
+    
+    def preprocess(self, image: Image.Image) -> torch.Tensor:
+        """
+        DEPRECATED: Use extract_embedding_from_pil() diretamente.
+        Mantido para compatibilidade.
+        """
+        return preprocess_image(pil_image=image, device=self.device)
+    
+    def extract_embedding(self, image_tensor: torch.Tensor) -> np.ndarray:
+        """
+        DEPRECATED: Use extract_embedding_from_*() diretamente.
+        Extrai embedding de um tensor já preprocessado.
+        """
+        with torch.no_grad():
+            embedding = self.model(image_tensor)
+            embedding = embedding.squeeze().cpu().numpy()
+        return embedding
+    
+    def extract_embedding_with_tta(self, image: Image.Image) -> np.ndarray:
+        """
+        DEPRECATED: Use extract_embedding_from_pil() com use_tta=True.
+        """
+        return extract_embedding_standardized(self, pil_image=image, use_tta=True)
     
     def __repr__(self) -> str:
         return (
