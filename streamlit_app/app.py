@@ -1,9 +1,3 @@
-"""
-Face Recognition - Streamlit Interface
-=======================================
-Interface para busca de faces similares no banco Milvus.
-"""
-
 import streamlit as st
 import sys
 import os
@@ -56,10 +50,66 @@ def get_milvus_client():
 
 
 # ===========================================
-# Funções auxiliares
+# Funções de Pré-processamento - CORRIGIDO
 # ===========================================
+def load_image_from_upload(uploaded_file) -> Image.Image:
+    """
+    Carrega imagem do upload do Streamlit de forma idêntica à API Flask.
+    
+    Esta função garante consistência com:
+    - app/api.py: Image.open(file.stream).convert('RGB')
+    - populatemilvus.py: Image.open(image_path).convert('RGB')
+    
+    O problema original era que o UploadedFile do Streamlit pode ter
+    comportamento diferente do file.stream do Flask. Esta correção:
+    1. Lê todos os bytes do upload
+    2. Cria um BytesIO fresco (simula file.stream do Flask)
+    3. Abre com PIL e converte para RGB
+    
+    Args:
+        uploaded_file: Objeto UploadedFile do Streamlit
+        
+    Returns:
+        Image.Image: Imagem PIL em modo RGB, pronta para extração de embedding
+    """
+    # Ler os bytes completos do arquivo uploadado
+    # Isso garante que pegamos todo o conteúdo, independente da posição do cursor
+    image_bytes = uploaded_file.getvalue()
+    
+    # Criar um BytesIO novo - isso simula exatamente o comportamento
+    # de file.stream na API Flask
+    image_stream = io.BytesIO(image_bytes)
+    
+    # Abrir a imagem e converter para RGB
+    # Esta é a mesma operação feita em:
+    # - app/api.py: Image.open(file.stream).convert('RGB')
+    # - models/base.py extract_embedding_from_path: Image.open(image_path).convert('RGB')
+    image = Image.open(image_stream).convert('RGB')
+    
+    return image
+
+
 def extract_embedding(model, image: Image.Image) -> np.ndarray:
-    """Extrai embedding de uma imagem PIL."""
+    """
+    Extrai embedding de uma imagem PIL.
+    
+    A imagem deve estar em modo RGB (garantido por load_image_from_upload).
+    
+    O modelo aplica os transforms definidos em models/base.py:
+    - transforms.Resize((112, 112))
+    - transforms.ToTensor()
+    - transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
+    
+    Se use_tta=True (padrão), também aplica flip horizontal e concatena:
+    - 512 dims (original) + 512 dims (flipped) = 1024 dims
+    
+    Args:
+        model: Modelo de extração de embeddings (MobileNetModel ou CosFaceModel)
+        image: Imagem PIL em modo RGB
+        
+    Returns:
+        np.ndarray: Embedding extraído (1024 dims com TTA, 512 sem TTA)
+    """
     return model.extract_embedding_from_pil(image)
 
 
@@ -201,13 +251,17 @@ def main():
         )
         
         if uploaded_file is not None:
+            # CORREÇÃO: Usar função padronizada de carregamento
+            # Isso garante processamento idêntico à API Flask
+            image = load_image_from_upload(uploaded_file)
+            
             # Exibir imagem enviada
-            image = Image.open(uploaded_file).convert('RGB')
             st.image(image, caption="Imagem enviada", use_container_width=True)
             
             # Informações da imagem
             st.caption(f"**Arquivo:** {uploaded_file.name}")
             st.caption(f"**Tamanho:** {image.size[0]}x{image.size[1]}")
+            st.caption(f"**Modo:** {image.mode}")  # Deve mostrar 'RGB'
             
             # Botão de busca
             search_button = st.button(
@@ -230,7 +284,7 @@ def main():
             
             model = models[selected_model]
             
-            # Extrair embedding
+            # Extrair embedding (imagem já está corretamente pré-processada)
             with st.spinner(f"Extraindo embedding com {selected_model}..."):
                 try:
                     embedding = extract_embedding(model, image)
