@@ -7,13 +7,15 @@ import numpy as np
 from PIL import Image
 import io
 
-# Adiciona o diretório raiz ao path
 ROOT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
 from app.config import Config
 from app.milvus_client import MilvusClient
 from models import ModelFactory
+
+# IMPORTANTE: Usar preprocessing centralizado
+from preprocessing import extract_embedding_standardized
 
 
 # ===========================================
@@ -36,8 +38,12 @@ def load_models():
     models = {}
     for model_name in Config.AVAILABLE_MODELS:
         try:
-            models[model_name] = ModelFactory.create(model_name)
-            print(f"✓ Modelo carregado: {model_name}")
+            # IMPORTANTE: Usar explicitamente Config.USE_TTA
+            models[model_name] = ModelFactory.create(
+                model_name,
+                use_tta=Config.USE_TTA
+            )
+            print(f"✓ Modelo carregado: {model_name} (TTA={Config.USE_TTA})")
         except Exception as e:
             print(f"✗ Erro ao carregar {model_name}: {e}")
     return models
@@ -50,67 +56,32 @@ def get_milvus_client():
 
 
 # ===========================================
-# Funções de Pré-processamento - CORRIGIDO
+# Funções auxiliares
 # ===========================================
-def load_image_from_upload(uploaded_file) -> Image.Image:
+def extract_embedding(model, uploaded_file) -> np.ndarray:
     """
-    Carrega imagem do upload do Streamlit de forma idêntica à API Flask.
-    
-    Esta função garante consistência com:
-    - app/api.py: Image.open(file.stream).convert('RGB')
-    - populatemilvus.py: Image.open(image_path).convert('RGB')
-    
-    O problema original era que o UploadedFile do Streamlit pode ter
-    comportamento diferente do file.stream do Flask. Esta correção:
-    1. Lê todos os bytes do upload
-    2. Cria um BytesIO fresco (simula file.stream do Flask)
-    3. Abre com PIL e converte para RGB
+    Extrai embedding de um arquivo uploaded do Streamlit.
+    USA PREPROCESSING CENTRALIZADO.
     
     Args:
-        uploaded_file: Objeto UploadedFile do Streamlit
-        
+        model: Modelo de face recognition
+        uploaded_file: Arquivo do st.file_uploader
+    
     Returns:
-        Image.Image: Imagem PIL em modo RGB, pronta para extração de embedding
+        Embedding numpy array
     """
-    # Ler os bytes completos do arquivo uploadado
-    # Isso garante que pegamos todo o conteúdo, independente da posição do cursor
-    image_bytes = uploaded_file.getvalue()
+    # IMPORTANTE: Ler bytes e usar preprocessing centralizado
+    # Isso garante que seja IDÊNTICO ao processamento na inserção
+    file_bytes = uploaded_file.read()
     
-    # Criar um BytesIO novo - isso simula exatamente o comportamento
-    # de file.stream na API Flask
-    image_stream = io.BytesIO(image_bytes)
+    # Resetar o ponteiro do arquivo caso precise ser usado novamente
+    uploaded_file.seek(0)
     
-    # Abrir a imagem e converter para RGB
-    # Esta é a mesma operação feita em:
-    # - app/api.py: Image.open(file.stream).convert('RGB')
-    # - models/base.py extract_embedding_from_path: Image.open(image_path).convert('RGB')
-    image = Image.open(image_stream).convert('RGB')
-    
-    return image
-
-
-def extract_embedding(model, image: Image.Image) -> np.ndarray:
-    """
-    Extrai embedding de uma imagem PIL.
-    
-    A imagem deve estar em modo RGB (garantido por load_image_from_upload).
-    
-    O modelo aplica os transforms definidos em models/base.py:
-    - transforms.Resize((112, 112))
-    - transforms.ToTensor()
-    - transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
-    
-    Se use_tta=True (padrão), também aplica flip horizontal e concatena:
-    - 512 dims (original) + 512 dims (flipped) = 1024 dims
-    
-    Args:
-        model: Modelo de extração de embeddings (MobileNetModel ou CosFaceModel)
-        image: Imagem PIL em modo RGB
-        
-    Returns:
-        np.ndarray: Embedding extraído (1024 dims com TTA, 512 sem TTA)
-    """
-    return model.extract_embedding_from_pil(image)
+    return extract_embedding_standardized(
+        model,
+        file_bytes=file_bytes,
+        use_tta=Config.USE_TTA
+    )
 
 
 def search_similar_faces(client: MilvusClient, embedding: np.ndarray, top_k: int = 5):
@@ -126,15 +97,12 @@ def display_results(results: list):
     
     st.subheader(f"🎯 Top {len(results)} Resultados")
     
-    # Criar colunas para exibir resultados
     cols = st.columns(min(len(results), 5))
     
     for idx, (col, result) in enumerate(zip(cols, results)):
         with col:
-            # Card de resultado
             st.markdown(f"**#{idx + 1}**")
             
-            # Tentar carregar imagem se existir
             image_path = result.get('image_path', '')
             if image_path and os.path.exists(image_path):
                 try:
@@ -145,11 +113,9 @@ def display_results(results: list):
             else:
                 st.info("📷 Imagem não encontrada")
             
-            # Informações
             similarity = result.get('distance', 0)
             person_id = result.get('person_id', 'N/A')
             
-            # Similaridade como porcentagem (Milvus retorna distância cosseno)
             similarity_pct = similarity * 100
             
             st.metric(
@@ -172,16 +138,15 @@ def get_collection_stats(client: MilvusClient) -> dict:
 # Interface Principal
 # ===========================================
 def main():
-    # Header
     st.title("🔍 Face Recognition")
     st.markdown("**Busca por similaridade facial usando embeddings vetoriais**")
+    st.markdown("*Versão com pré-processamento padronizado*")
     st.divider()
     
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configurações")
         
-        # Seleção de modelo
         selected_model = st.selectbox(
             "Modelo",
             options=Config.AVAILABLE_MODELS,
@@ -189,7 +154,6 @@ def main():
             help="Escolha o modelo para extração de embeddings"
         )
         
-        # Número de resultados
         top_k = st.slider(
             "Número de resultados",
             min_value=1,
@@ -200,17 +164,14 @@ def main():
         
         st.divider()
         
-        # Status do sistema
         st.header("📊 Status")
         
-        # Carregar recursos
         with st.spinner("Carregando modelos..."):
             models = load_models()
         
         with st.spinner("Conectando ao Milvus..."):
             milvus_client = get_milvus_client()
         
-        # Status dos modelos
         st.markdown("**Modelos:**")
         for model_name in Config.AVAILABLE_MODELS:
             if model_name in models:
@@ -218,24 +179,24 @@ def main():
             else:
                 st.error(f"✗ {model_name}")
         
-        # Status do Milvus
         st.markdown("**Milvus:**")
         try:
             stats = get_collection_stats(milvus_client)
             row_count = stats.get('row_count', 0)
             st.success(f"✓ Conectado")
-            st.info(f"📁 {row_count} embeddings na collection")
+            st.info(f"📁 {row_count} embeddings")
         except Exception as e:
             st.error(f"✗ Erro: {e}")
         
         st.divider()
         
-        # Informações
         st.header("ℹ️ Informações")
         st.markdown(f"""
         - **Collection:** `{Config.COLLECTION_NAME}`
         - **Dimensão:** {Config.EMBEDDING_DIM}
+        - **TTA:** {'ON' if Config.USE_TTA else 'OFF'}
         - **Métrica:** Similaridade Cosseno
+        - **Preprocessing:** Centralizado ✓
         """)
     
     # Área principal
@@ -251,19 +212,15 @@ def main():
         )
         
         if uploaded_file is not None:
-            # CORREÇÃO: Usar função padronizada de carregamento
-            # Isso garante processamento idêntico à API Flask
-            image = load_image_from_upload(uploaded_file)
-            
             # Exibir imagem enviada
+            # Resetar ponteiro antes de abrir para exibição
+            uploaded_file.seek(0)
+            image = Image.open(uploaded_file).convert('RGB')
             st.image(image, caption="Imagem enviada", use_container_width=True)
             
-            # Informações da imagem
             st.caption(f"**Arquivo:** {uploaded_file.name}")
             st.caption(f"**Tamanho:** {image.size[0]}x{image.size[1]}")
-            st.caption(f"**Modo:** {image.mode}")  # Deve mostrar 'RGB'
             
-            # Botão de busca
             search_button = st.button(
                 "🔍 Buscar Similares",
                 type="primary",
@@ -277,20 +234,23 @@ def main():
         st.subheader("📋 Resultados")
         
         if uploaded_file is not None and search_button:
-            # Verificar se modelo está carregado
             if selected_model not in models:
                 st.error(f"Modelo '{selected_model}' não está disponível.")
                 return
             
             model = models[selected_model]
             
-            # Extrair embedding (imagem já está corretamente pré-processada)
+            # Extrair embedding usando preprocessing centralizado
             with st.spinner(f"Extraindo embedding com {selected_model}..."):
                 try:
-                    embedding = extract_embedding(model, image)
+                    # Resetar ponteiro do arquivo
+                    uploaded_file.seek(0)
+                    embedding = extract_embedding(model, uploaded_file)
                     st.success(f"✓ Embedding extraído ({len(embedding)} dimensões)")
                 except Exception as e:
                     st.error(f"Erro ao extrair embedding: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
                     return
             
             # Buscar similares
@@ -309,7 +269,6 @@ def main():
                 st.divider()
                 st.subheader("📊 Detalhes")
                 
-                # Preparar dados para tabela
                 table_data = []
                 for idx, result in enumerate(results):
                     table_data.append({
@@ -327,7 +286,6 @@ def main():
                 )
         
         elif uploaded_file is None:
-            # Placeholder
             st.markdown(
                 """
                 <div style="
@@ -339,14 +297,15 @@ def main():
                 ">
                     <h3>👈 Faça upload de uma imagem</h3>
                     <p>Os resultados aparecerão aqui</p>
+                    <br>
+                    <p style="font-size: 12px; color: #aaa;">
+                        ✓ Pré-processamento padronizado ativo
+                    </p>
                 </div>
                 """,
                 unsafe_allow_html=True
             )
 
 
-# ===========================================
-# Entry Point
-# ===========================================
 if __name__ == "__main__":
     main()

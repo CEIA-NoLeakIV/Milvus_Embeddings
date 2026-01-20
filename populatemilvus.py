@@ -1,21 +1,3 @@
-#!/usr/bin/env python3
-"""
-Script para popular o Milvus com embeddings do dataset LFW
-==========================================================
-
-Este script:
-1. Carrega o modelo MobileNetV3 Large com TTA
-2. Percorre todas as imagens do dataset LFW
-3. Extrai os embeddings de cada imagem (1024 dims com TTA)
-4. Insere no Milvus Lite (salvo em data/milvus_face.db)
-
-Uso:
-    python populatemilvus.py
-    python populatemilvus.py --model cosface_resnet50
-    python populatemilvus.py --batch-size 64 --limit 1000
-    python populatemilvus.py --no-tta  # Para usar 512 dims sem TTA
-"""
-
 import os
 import sys
 import argparse
@@ -23,7 +5,6 @@ from pathlib import Path
 from datetime import datetime
 from tqdm import tqdm
 
-# Adicionar diretório raiz ao path
 ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
 
@@ -34,6 +15,9 @@ from PIL import Image
 from app.config import Config
 from app.milvus_client import MilvusClient
 from models import ModelFactory
+
+# IMPORTANTE: Usar preprocessing centralizado
+from preprocessing import extract_embedding_standardized
 
 
 # ===========================================
@@ -109,10 +93,7 @@ def get_image_files(directory: str) -> list:
 
 
 def extract_person_id(image_path: Path, base_dir: Path) -> str:
-    """
-    Extrai o ID da pessoa do caminho da imagem.
-    Assume estrutura: base_dir/person_name/image.jpg
-    """
+    """Extrai o ID da pessoa do caminho da imagem."""
     try:
         relative = image_path.relative_to(base_dir)
         return relative.parts[0] if relative.parts else image_path.stem
@@ -123,12 +104,12 @@ def extract_person_id(image_path: Path, base_dir: Path) -> str:
 def main():
     args = parse_args()
     
-    # Configurações
+    # Determinar uso de TTA
     use_tta = not args.no_tta
     embedding_dim = 1024 if use_tta else 512
     
     print("=" * 60)
-    print("  POPULAR MILVUS COM EMBEDDINGS")
+    print("  POPULAR MILVUS COM EMBEDDINGS (VERSÃO PADRONIZADA)")
     print("=" * 60)
     print(f"  Modelo:        {args.model}")
     print(f"  TTA:           {'ON (1024 dims)' if use_tta else 'OFF (512 dims)'}")
@@ -139,20 +120,17 @@ def main():
     print(f"  Recreate:      {args.recreate}")
     print("=" * 60)
     
-    # Carregar modelo com TTA
+    # IMPORTANTE: Atualizar Config ANTES de criar qualquer cliente
+    Config.USE_TTA = use_tta
+    Config.EMBEDDING_DIM = embedding_dim
+    
+    # Carregar modelo com a configuração correta de TTA
     print("\n[1/4] Carregando modelo...")
     model = ModelFactory.create(args.model, use_tta=use_tta)
     print(f"✓ Modelo carregado: {model}")
     
     # Conectar ao Milvus
     print("\n[2/4] Conectando ao Milvus...")
-    
-    # Se usar TTA, precisa atualizar Config antes de criar o cliente
-    if use_tta:
-        Config.EMBEDDING_DIM = 1024
-    else:
-        Config.EMBEDDING_DIM = 512
-    
     milvus = MilvusClient()
     
     if args.recreate:
@@ -170,6 +148,7 @@ def main():
     
     # Extrair e inserir embeddings
     print("\n[4/4] Extraindo embeddings e inserindo no Milvus...")
+    print("      (Usando pré-processamento PADRONIZADO)")
     
     base_dir = Path(args.lfw_dir)
     batch_embeddings = []
@@ -181,8 +160,13 @@ def main():
     
     for img_path in tqdm(image_files, desc="Processando"):
         try:
-            # Extrair embedding (com ou sem TTA)
-            embedding = model.extract_embedding_from_path(str(img_path))
+            # IMPORTANTE: Usar preprocessing centralizado
+            # Isso garante que a extração seja IDÊNTICA à busca
+            embedding = extract_embedding_standardized(
+                model,
+                file_path=str(img_path),
+                use_tta=use_tta
+            )
             
             # Extrair person_id
             person_id = extract_person_id(img_path, base_dir)
@@ -225,11 +209,24 @@ def main():
     print(f"  Erros:           {errors}")
     print(f"  Embedding dim:   {embedding_dim}")
     print(f"  TTA:             {'ON' if use_tta else 'OFF'}")
+    print(f"  Preprocessing:   PADRONIZADO (centralizado)")
     
     # Stats da collection
     stats = milvus.get_collection_stats()
     print(f"  Collection size: {stats['row_count']}")
     print("=" * 60)
+    
+    # Salvar configuração usada para referência
+    config_file = ROOT_DIR / "data" / "populate_config.txt"
+    config_file.parent.mkdir(exist_ok=True)
+    with open(config_file, 'w') as f:
+        f.write(f"timestamp: {datetime.now().isoformat()}\n")
+        f.write(f"model: {args.model}\n")
+        f.write(f"use_tta: {use_tta}\n")
+        f.write(f"embedding_dim: {embedding_dim}\n")
+        f.write(f"total_inserted: {total_inserted}\n")
+        f.write(f"preprocessing: centralized\n")
+    print(f"\n✓ Configuração salva em: {config_file}")
 
 
 if __name__ == "__main__":

@@ -1,13 +1,5 @@
-"""
-Face Recognition API - Flask Application
-=========================================
-API REST para extração de embeddings e inserção no Milvus.
-"""
-
 import os
 import sys
-import json
-import tempfile
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any
@@ -16,7 +8,6 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import numpy as np
-from PIL import Image
 
 # Adiciona o diretório raiz ao path
 ROOT_DIR = Path(__file__).parent.parent
@@ -25,6 +16,9 @@ sys.path.insert(0, str(ROOT_DIR))
 from .config import Config
 from .milvus_client import MilvusClient
 from models import ModelFactory
+
+# IMPORTANTE: Importar o módulo de preprocessing centralizado
+from preprocessing import extract_embedding_standardized
 
 
 # ===========================================
@@ -40,8 +34,12 @@ def get_model(model_name: str):
     
     if model_name not in _models:
         print(f"Carregando modelo: {model_name}...")
-        _models[model_name] = ModelFactory.create(model_name)
-        print(f"✓ Modelo '{model_name}' carregado!")
+        # IMPORTANTE: Usar explicitamente Config.USE_TTA
+        _models[model_name] = ModelFactory.create(
+            model_name,
+            use_tta=Config.USE_TTA
+        )
+        print(f"✓ Modelo '{model_name}' carregado! (TTA={Config.USE_TTA})")
     
     return _models[model_name]
 
@@ -65,7 +63,6 @@ def create_app():
     app = Flask(__name__)
     app.config['MAX_CONTENT_LENGTH'] = Config.MAX_CONTENT_LENGTH
     
-    # Habilitar CORS
     CORS(app)
     
     # ===========================================
@@ -78,10 +75,9 @@ def create_app():
             client = get_milvus_client()
             stats = client.get_collection_stats()
             milvus_ok = stats.get("exists", False) or stats.get("row_count", 0) >= 0
-        except Exception as e:
+        except Exception:
             milvus_ok = False
         
-        # Verificar modelos carregados
         loaded_models = list(_models.keys())
         
         return jsonify({
@@ -90,7 +86,9 @@ def create_app():
             "models_loaded": loaded_models,
             "models_available": Config.AVAILABLE_MODELS,
             "milvus_connected": milvus_ok,
-            "device": str(Config.DEVICE)
+            "device": str(Config.DEVICE),
+            "use_tta": Config.USE_TTA,
+            "embedding_dim": Config.EMBEDDING_DIM
         })
     
     @app.route('/api/models', methods=['GET'])
@@ -112,7 +110,8 @@ def create_app():
         
         return jsonify({
             "models": models_info,
-            "default": Config.DEFAULT_MODEL
+            "default": Config.DEFAULT_MODEL,
+            "use_tta": Config.USE_TTA
         })
     
     # ===========================================
@@ -122,12 +121,8 @@ def create_app():
     def generate_embedding():
         """
         Gera embedding de uma única imagem.
-        
-        Form Data:
-            - image: arquivo de imagem
-            - model: nome do modelo (opcional, default: mobilenetv3_large)
+        USA PREPROCESSING CENTRALIZADO.
         """
-        # Validar arquivo
         if 'image' not in request.files:
             return jsonify({"error": "Campo 'image' é obrigatório"}), 400
         
@@ -141,31 +136,31 @@ def create_app():
                 "error": f"Extensão não permitida. Use: {Config.ALLOWED_EXTENSIONS}"
             }), 400
         
-        # Obter modelo
         model_name = request.form.get('model', Config.DEFAULT_MODEL)
         
         if model_name not in Config.AVAILABLE_MODELS:
             return jsonify({
-                "error": f"Modelo '{model_name}' não encontrado. "
-                        f"Disponíveis: {Config.AVAILABLE_MODELS}"
+                "error": f"Modelo '{model_name}' não encontrado"
             }), 400
         
         try:
-            # Carregar modelo
             model = get_model(model_name)
             
-            # Abrir imagem
-            image = Image.open(file.stream).convert('RGB')
-            
-            # Extrair embedding
-            embedding = model.extract_embedding_from_pil(image)
+            # IMPORTANTE: Usar preprocessing centralizado com file_stream
+            # Isso garante que o processamento seja IDÊNTICO ao usado na inserção
+            embedding = extract_embedding_standardized(
+                model,
+                file_stream=file.stream,
+                use_tta=Config.USE_TTA
+            )
             
             return jsonify({
                 "success": True,
                 "model": model_name,
                 "embedding": embedding.tolist(),
                 "embedding_dim": len(embedding),
-                "filename": secure_filename(file.filename)
+                "filename": secure_filename(file.filename),
+                "use_tta": Config.USE_TTA
             })
             
         except Exception as e:
@@ -178,12 +173,8 @@ def create_app():
     def generate_embeddings_batch():
         """
         Gera embeddings para múltiplas imagens.
-        
-        Form Data:
-            - images: múltiplos arquivos de imagem
-            - model: nome do modelo (opcional)
+        USA PREPROCESSING CENTRALIZADO.
         """
-        # Validar arquivos
         if 'images' not in request.files:
             return jsonify({"error": "Campo 'images' é obrigatório"}), 400
         
@@ -197,7 +188,6 @@ def create_app():
                 "error": f"Máximo de {Config.MAX_BATCH_SIZE} imagens por lote"
             }), 400
         
-        # Obter modelo
         model_name = request.form.get('model', Config.DEFAULT_MODEL)
         
         if model_name not in Config.AVAILABLE_MODELS:
@@ -225,9 +215,14 @@ def create_app():
                         failed += 1
                         continue
                     
-                    # Processar imagem
-                    image = Image.open(file.stream).convert('RGB')
-                    embedding = model.extract_embedding_from_pil(image)
+                    # IMPORTANTE: Usar preprocessing centralizado
+                    # Ler bytes do arquivo para garantir consistência
+                    file_bytes = file.read()
+                    embedding = extract_embedding_standardized(
+                        model,
+                        file_bytes=file_bytes,
+                        use_tta=Config.USE_TTA
+                    )
                     
                     results.append({
                         "filename": filename,
@@ -266,14 +261,8 @@ def create_app():
     def insert_to_milvus():
         """
         Gera embeddings e insere no Milvus.
-        
-        Form Data:
-            - images: arquivos de imagem
-            - model: nome do modelo (opcional)
-            - person_id: ID da pessoa (obrigatório)
-            - image_paths: JSON array com caminhos originais (opcional)
+        USA PREPROCESSING CENTRALIZADO.
         """
-        # Validar arquivos
         if 'images' not in request.files:
             return jsonify({"error": "Campo 'images' é obrigatório"}), 400
         
@@ -282,12 +271,10 @@ def create_app():
         if not files:
             return jsonify({"error": "Nenhum arquivo enviado"}), 400
         
-        # Validar person_id
         person_id = request.form.get('person_id')
         if not person_id:
             return jsonify({"error": "Campo 'person_id' é obrigatório"}), 400
         
-        # Obter modelo
         model_name = request.form.get('model', Config.DEFAULT_MODEL)
         
         if model_name not in Config.AVAILABLE_MODELS:
@@ -295,7 +282,7 @@ def create_app():
                 "error": f"Modelo '{model_name}' não encontrado"
             }), 400
         
-        # Obter caminhos originais (opcional)
+        import json
         image_paths_json = request.form.get('image_paths')
         if image_paths_json:
             try:
@@ -322,14 +309,17 @@ def create_app():
                         errors.append(f"{filename}: extensão não permitida")
                         continue
                     
-                    # Processar imagem
-                    image = Image.open(file.stream).convert('RGB')
-                    embedding = model.extract_embedding_from_pil(image)
+                    # IMPORTANTE: Usar preprocessing centralizado
+                    file_bytes = file.read()
+                    embedding = extract_embedding_standardized(
+                        model,
+                        file_bytes=file_bytes,
+                        use_tta=Config.USE_TTA
+                    )
                     
                     embeddings.append(embedding)
                     person_ids.append(person_id)
                     
-                    # Usar caminho original ou nome do arquivo
                     if original_paths and idx < len(original_paths):
                         paths.append(original_paths[idx])
                     else:
@@ -338,7 +328,6 @@ def create_app():
                 except Exception as e:
                     errors.append(f"{filename}: {str(e)}")
             
-            # Inserir no Milvus
             if embeddings:
                 inserted = client.insert(
                     embeddings=embeddings,
@@ -372,13 +361,8 @@ def create_app():
     def search_milvus():
         """
         Busca faces similares no Milvus.
-        
-        Form Data:
-            - image: arquivo de imagem para busca
-            - model: nome do modelo (opcional)
-            - top_k: número de resultados (opcional, default: 5)
+        USA PREPROCESSING CENTRALIZADO.
         """
-        # Validar arquivo
         if 'image' not in request.files:
             return jsonify({"error": "Campo 'image' é obrigatório"}), 400
         
@@ -387,7 +371,6 @@ def create_app():
         if not Config.is_allowed_file(file.filename):
             return jsonify({"error": "Extensão não permitida"}), 400
         
-        # Obter parâmetros
         model_name = request.form.get('model', Config.DEFAULT_MODEL)
         top_k = int(request.form.get('top_k', 5))
         
@@ -400,11 +383,14 @@ def create_app():
             model = get_model(model_name)
             client = get_milvus_client()
             
-            # Extrair embedding
-            image = Image.open(file.stream).convert('RGB')
-            embedding = model.extract_embedding_from_pil(image)
+            # IMPORTANTE: Usar preprocessing centralizado
+            file_bytes = file.read()
+            embedding = extract_embedding_standardized(
+                model,
+                file_bytes=file_bytes,
+                use_tta=Config.USE_TTA
+            )
             
-            # Buscar similares
             results = client.search(embedding, top_k=top_k)
             
             return jsonify({
@@ -427,7 +413,7 @@ def create_app():
         try:
             client = get_milvus_client()
             stats = client.get_collection_stats()
-            collections = client.list_collections()
+            collections = client.list_collections() if hasattr(client, 'list_collections') else []
             
             return jsonify({
                 "success": True,
@@ -483,9 +469,6 @@ def create_app():
     return app
 
 
-# ===========================================
-# Entry Point
-# ===========================================
 if __name__ == "__main__":
     app = create_app()
     app.run(debug=True)

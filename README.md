@@ -124,6 +124,7 @@ curl -X POST http://localhost:5000/api/embedding \
 ├── tests/                # Testes
 ├── data/                 # Banco Milvus (auto-gerado)
 ├── populatemilvus.py     # Popular banco
+├── preprocessing.py      # Centraliza funções de pré-processamento
 ├── run_api.py            # Iniciar API
 └── run_streamlit.py      # Iniciar Streamlit
 ```
