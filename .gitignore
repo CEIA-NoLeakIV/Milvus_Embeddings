@@ -15,8 +15,7 @@ venv_linux/
 models/weights/*.ckpt
 !models/weights/.gitkeep
 
-# Data
-data/
+# Datasets
 lfw/
 uploads/
 
