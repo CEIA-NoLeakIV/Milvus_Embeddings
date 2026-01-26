@@ -17,6 +17,20 @@ from models import ModelFactory
 # IMPORTANTE: Usar preprocessing centralizado
 from preprocessing import extract_embedding_standardized
 
+# Importar módulo de detecção facial para feedback visual
+try:
+    from utils.face_detection import (
+        detect_and_align_face,
+        detect_faces,
+        is_face_detection_available,
+        NoFaceDetectedError,
+        FaceDetector
+    )
+    FACE_DETECTION_AVAILABLE = is_face_detection_available()
+except ImportError:
+    FACE_DETECTION_AVAILABLE = False
+    NoFaceDetectedError = Exception
+
 
 # ===========================================
 # Configuração da Página
@@ -55,10 +69,24 @@ def get_milvus_client():
     return MilvusClient()
 
 
+@st.cache_resource
+def get_face_detector():
+    """Retorna detector facial (cached)."""
+    if FACE_DETECTION_AVAILABLE:
+        return FaceDetector(
+            conf_threshold=Config.FACE_DETECTION_CONF_THRESHOLD
+        )
+    return None
+
+
 # ===========================================
 # Funções auxiliares
 # ===========================================
-def extract_embedding(model, uploaded_file) -> np.ndarray:
+def extract_embedding(
+    model,
+    uploaded_file,
+    use_face_detection: bool = True
+) -> np.ndarray:
     """
     Extrai embedding de um arquivo uploaded do Streamlit.
     USA PREPROCESSING CENTRALIZADO.
@@ -66,12 +94,12 @@ def extract_embedding(model, uploaded_file) -> np.ndarray:
     Args:
         model: Modelo de face recognition
         uploaded_file: Arquivo do st.file_uploader
+        use_face_detection: Se True, aplica detecção facial
     
     Returns:
         Embedding numpy array
     """
     # IMPORTANTE: Ler bytes e usar preprocessing centralizado
-    # Isso garante que seja IDÊNTICO ao processamento na inserção
     file_bytes = uploaded_file.read()
     
     # Resetar o ponteiro do arquivo caso precise ser usado novamente
@@ -80,8 +108,50 @@ def extract_embedding(model, uploaded_file) -> np.ndarray:
     return extract_embedding_standardized(
         model,
         file_bytes=file_bytes,
-        use_tta=Config.USE_TTA
+        use_tta=Config.USE_TTA,
+        use_face_detection=use_face_detection,
+        conf_threshold=Config.FACE_DETECTION_CONF_THRESHOLD,
+        select_largest=Config.FACE_DETECTION_SELECT_LARGEST
     )
+
+
+def detect_and_show_face(image: Image.Image) -> tuple:
+    """
+    Detecta face na imagem e retorna informações para exibição.
+    
+    Args:
+        image: Imagem PIL
+    
+    Returns:
+        Tuple (aligned_face_pil, detection_info) ou (None, error_message)
+    """
+    if not FACE_DETECTION_AVAILABLE:
+        return None, {"error": "Face detection not available"}
+    
+    try:
+        # Converter para numpy
+        image_np = np.array(image)
+        
+        # Detectar faces
+        detector = get_face_detector()
+        info = detector.get_detection_info(image_np)
+        
+        if info['num_faces'] == 0:
+            return None, {"error": "no_face_detected", "info": info}
+        
+        # Alinhar face
+        aligned_np = detector.detect_and_align(
+            image_np,
+            select_largest=Config.FACE_DETECTION_SELECT_LARGEST
+        )
+        
+        # Converter para PIL
+        aligned_pil = Image.fromarray(aligned_np)
+        
+        return aligned_pil, info
+        
+    except Exception as e:
+        return None, {"error": str(e)}
 
 
 def search_similar_faces(client: MilvusClient, embedding: np.ndarray, top_k: int = 5):
@@ -140,7 +210,13 @@ def get_collection_stats(client: MilvusClient) -> dict:
 def main():
     st.title("🔍 Face Recognition")
     st.markdown("**Busca por similaridade facial usando embeddings vetoriais**")
-    st.markdown("*Versão com pré-processamento padronizado*")
+    
+    # Mostrar status da detecção facial
+    if FACE_DETECTION_AVAILABLE:
+        st.markdown("*✅ Detecção facial ativa (RetinaFace)*")
+    else:
+        st.markdown("*⚠️ Detecção facial não disponível*")
+    
     st.divider()
     
     # Sidebar
@@ -161,6 +237,43 @@ def main():
             value=5,
             help="Quantidade de faces similares a retornar"
         )
+        
+        st.divider()
+        
+        # Configurações de detecção facial
+        st.header("🎯 Detecção Facial")
+        
+        if FACE_DETECTION_AVAILABLE:
+            use_face_detection = st.checkbox(
+                "Habilitar detecção",
+                value=Config.USE_FACE_DETECTION,
+                help="Detecta, recorta e alinha a face automaticamente"
+            )
+            
+            if use_face_detection:
+                show_aligned_face = st.checkbox(
+                    "Mostrar face alinhada",
+                    value=True,
+                    help="Exibe a face após detecção e alinhamento"
+                )
+                
+                conf_threshold = st.slider(
+                    "Confiança mínima",
+                    min_value=0.1,
+                    max_value=1.0,
+                    value=Config.FACE_DETECTION_CONF_THRESHOLD,
+                    step=0.05,
+                    help="Limiar de confiança do detector"
+                )
+            else:
+                show_aligned_face = False
+                conf_threshold = Config.FACE_DETECTION_CONF_THRESHOLD
+        else:
+            st.warning("⚠️ Instale uniface para habilitar")
+            st.code("pip install uniface", language="bash")
+            use_face_detection = False
+            show_aligned_face = False
+            conf_threshold = 0.5
         
         st.divider()
         
@@ -195,8 +308,8 @@ def main():
         - **Collection:** `{Config.COLLECTION_NAME}`
         - **Dimensão:** {Config.EMBEDDING_DIM}
         - **TTA:** {'ON' if Config.USE_TTA else 'OFF'}
+        - **Face Detection:** {'ON' if use_face_detection else 'OFF'}
         - **Métrica:** Similaridade Cosseno
-        - **Preprocessing:** Centralizado ✓
         """)
     
     # Área principal
@@ -213,13 +326,43 @@ def main():
         
         if uploaded_file is not None:
             # Exibir imagem enviada
-            # Resetar ponteiro antes de abrir para exibição
             uploaded_file.seek(0)
             image = Image.open(uploaded_file).convert('RGB')
-            st.image(image, caption="Imagem enviada", use_container_width=True)
             
+            st.image(image, caption="Imagem original", use_container_width=True)
             st.caption(f"**Arquivo:** {uploaded_file.name}")
             st.caption(f"**Tamanho:** {image.size[0]}x{image.size[1]}")
+            
+            # Mostrar face detectada/alinhada (se habilitado)
+            if use_face_detection and show_aligned_face and FACE_DETECTION_AVAILABLE:
+                st.divider()
+                st.markdown("**🎯 Face Detectada:**")
+                
+                with st.spinner("Detectando face..."):
+                    aligned_face, detection_info = detect_and_show_face(image)
+                
+                if aligned_face is not None:
+                    # Exibir face alinhada
+                    st.image(aligned_face, caption="Face alinhada (112x112)", width=150)
+                    
+                    # Informações da detecção
+                    if 'faces' in detection_info and len(detection_info['faces']) > 0:
+                        best_face = detection_info['faces'][0]
+                        st.caption(f"**Score:** {best_face['score']:.2f}")
+                        st.caption(f"**Faces encontradas:** {detection_info['num_faces']}")
+                        
+                        if detection_info['num_faces'] > 1:
+                            st.info(f"ℹ️ {detection_info['num_faces']} faces detectadas. Usando a maior.")
+                else:
+                    # Erro na detecção
+                    error = detection_info.get('error', 'Erro desconhecido')
+                    if error == 'no_face_detected':
+                        st.error("❌ Nenhuma face detectada na imagem")
+                        st.caption("Tente com outra imagem ou desabilite a detecção facial.")
+                    else:
+                        st.error(f"❌ Erro: {error}")
+            
+            st.divider()
             
             search_button = st.button(
                 "🔍 Buscar Similares",
@@ -245,8 +388,23 @@ def main():
                 try:
                     # Resetar ponteiro do arquivo
                     uploaded_file.seek(0)
-                    embedding = extract_embedding(model, uploaded_file)
+                    embedding = extract_embedding(
+                        model,
+                        uploaded_file,
+                        use_face_detection=use_face_detection
+                    )
                     st.success(f"✓ Embedding extraído ({len(embedding)} dimensões)")
+                    
+                except NoFaceDetectedError as e:
+                    st.error("❌ Nenhuma face detectada na imagem!")
+                    st.warning("""
+                    **Possíveis soluções:**
+                    - Tente com outra imagem que contenha uma face clara
+                    - Verifique se a face está visível e bem iluminada
+                    - Desabilite a detecção facial na sidebar (não recomendado)
+                    """)
+                    return
+                    
                 except Exception as e:
                     st.error(f"Erro ao extrair embedding: {e}")
                     import traceback
@@ -284,6 +442,16 @@ def main():
                     use_container_width=True,
                     hide_index=True
                 )
+                
+                # Info sobre configurações usadas
+                st.divider()
+                st.caption(f"""
+                **Configurações usadas:**
+                Modelo: {selected_model} | 
+                TTA: {'ON' if Config.USE_TTA else 'OFF'} | 
+                Face Detection: {'ON' if use_face_detection else 'OFF'} |
+                Dimensão: {len(embedding)}
+                """)
         
         elif uploaded_file is None:
             st.markdown(
@@ -299,7 +467,8 @@ def main():
                     <p>Os resultados aparecerão aqui</p>
                     <br>
                     <p style="font-size: 12px; color: #aaa;">
-                        ✓ Pré-processamento padronizado ativo
+                        ✓ Pré-processamento padronizado ativo<br>
+                        """ + ("✓ Detecção facial ativa" if FACE_DETECTION_AVAILABLE else "⚠️ Detecção facial não disponível") + """
                     </p>
                 </div>
                 """,
