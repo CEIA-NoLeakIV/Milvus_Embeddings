@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any
@@ -19,6 +20,16 @@ from models import ModelFactory
 
 # IMPORTANTE: Importar o módulo de preprocessing centralizado
 from preprocessing import extract_embedding_standardized
+
+# Importar exceção de detecção facial
+try:
+    from utils.face_detection import NoFaceDetectedError, is_face_detection_available
+    FACE_DETECTION_AVAILABLE = is_face_detection_available()
+except ImportError:
+    FACE_DETECTION_AVAILABLE = False
+    # Criar exceção dummy para não quebrar o código
+    class NoFaceDetectedError(Exception):
+        pass
 
 
 # ===========================================
@@ -80,6 +91,13 @@ def create_app():
         
         loaded_models = list(_models.keys())
         
+        # Verificar status da detecção facial
+        face_detection_status = {
+            "available": FACE_DETECTION_AVAILABLE,
+            "enabled": Config.USE_FACE_DETECTION,
+            "conf_threshold": Config.FACE_DETECTION_CONF_THRESHOLD
+        }
+        
         return jsonify({
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
@@ -88,7 +106,8 @@ def create_app():
             "milvus_connected": milvus_ok,
             "device": str(Config.DEVICE),
             "use_tta": Config.USE_TTA,
-            "embedding_dim": Config.EMBEDDING_DIM
+            "embedding_dim": Config.EMBEDDING_DIM,
+            "face_detection": face_detection_status
         })
     
     @app.route('/api/models', methods=['GET'])
@@ -111,7 +130,8 @@ def create_app():
         return jsonify({
             "models": models_info,
             "default": Config.DEFAULT_MODEL,
-            "use_tta": Config.USE_TTA
+            "use_tta": Config.USE_TTA,
+            "face_detection_enabled": Config.USE_FACE_DETECTION
         })
     
     # ===========================================
@@ -121,7 +141,18 @@ def create_app():
     def generate_embedding():
         """
         Gera embedding de uma única imagem.
-        USA PREPROCESSING CENTRALIZADO.
+        USA PREPROCESSING CENTRALIZADO COM DETECÇÃO FACIAL.
+        
+        Form params:
+            - image: arquivo de imagem (obrigatório)
+            - model: nome do modelo (opcional, default: mobilenetv3_large)
+            - use_face_detection: "true" ou "false" (opcional, default: Config)
+        
+        Returns:
+            - 200: embedding gerado com sucesso
+            - 400: erro de validação
+            - 422: nenhuma face detectada na imagem
+            - 500: erro interno
         """
         if 'image' not in request.files:
             return jsonify({"error": "Campo 'image' é obrigatório"}), 400
@@ -143,15 +174,27 @@ def create_app():
                 "error": f"Modelo '{model_name}' não encontrado"
             }), 400
         
+        # Parâmetro opcional para controlar detecção facial
+        use_face_detection_param = request.form.get('use_face_detection')
+        if use_face_detection_param is not None:
+            use_face_detection = use_face_detection_param.lower() == 'true'
+        else:
+            use_face_detection = Config.USE_FACE_DETECTION
+        
         try:
             model = get_model(model_name)
             
-            # IMPORTANTE: Usar preprocessing centralizado com file_stream
-            # Isso garante que o processamento seja IDÊNTICO ao usado na inserção
+            # Ler bytes do arquivo
+            file_bytes = file.read()
+            
+            # IMPORTANTE: Usar preprocessing centralizado com detecção facial
             embedding = extract_embedding_standardized(
                 model,
-                file_stream=file.stream,
-                use_tta=Config.USE_TTA
+                file_bytes=file_bytes,
+                use_tta=Config.USE_TTA,
+                use_face_detection=use_face_detection,
+                conf_threshold=Config.FACE_DETECTION_CONF_THRESHOLD,
+                select_largest=Config.FACE_DETECTION_SELECT_LARGEST
             )
             
             return jsonify({
@@ -160,8 +203,19 @@ def create_app():
                 "embedding": embedding.tolist(),
                 "embedding_dim": len(embedding),
                 "filename": secure_filename(file.filename),
-                "use_tta": Config.USE_TTA
+                "use_tta": Config.USE_TTA,
+                "face_detection_used": use_face_detection
             })
+        
+        except NoFaceDetectedError as e:
+            # Erro específico: nenhuma face detectada
+            return jsonify({
+                "success": False,
+                "error": "no_face_detected",
+                "message": "Nenhuma face foi detectada na imagem",
+                "details": str(e),
+                "filename": secure_filename(file.filename)
+            }), 422  # 422 Unprocessable Entity
             
         except Exception as e:
             return jsonify({
@@ -173,7 +227,9 @@ def create_app():
     def generate_embeddings_batch():
         """
         Gera embeddings para múltiplas imagens.
-        USA PREPROCESSING CENTRALIZADO.
+        USA PREPROCESSING CENTRALIZADO COM DETECÇÃO FACIAL.
+        
+        Retorna sucesso parcial se algumas imagens falharem.
         """
         if 'images' not in request.files:
             return jsonify({"error": "Campo 'images' é obrigatório"}), 400
@@ -195,12 +251,20 @@ def create_app():
                 "error": f"Modelo '{model_name}' não encontrado"
             }), 400
         
+        # Parâmetro opcional para controlar detecção facial
+        use_face_detection_param = request.form.get('use_face_detection')
+        if use_face_detection_param is not None:
+            use_face_detection = use_face_detection_param.lower() == 'true'
+        else:
+            use_face_detection = Config.USE_FACE_DETECTION
+        
         try:
             model = get_model(model_name)
             
             results = []
             successful = 0
             failed = 0
+            no_face_count = 0
             
             for file in files:
                 filename = secure_filename(file.filename)
@@ -215,13 +279,17 @@ def create_app():
                         failed += 1
                         continue
                     
-                    # IMPORTANTE: Usar preprocessing centralizado
-                    # Ler bytes do arquivo para garantir consistência
+                    # Ler bytes do arquivo
                     file_bytes = file.read()
+                    
+                    # IMPORTANTE: Usar preprocessing centralizado
                     embedding = extract_embedding_standardized(
                         model,
                         file_bytes=file_bytes,
-                        use_tta=Config.USE_TTA
+                        use_tta=Config.USE_TTA,
+                        use_face_detection=use_face_detection,
+                        conf_threshold=Config.FACE_DETECTION_CONF_THRESHOLD,
+                        select_largest=Config.FACE_DETECTION_SELECT_LARGEST
                     )
                     
                     results.append({
@@ -230,6 +298,16 @@ def create_app():
                         "embedding": embedding.tolist()
                     })
                     successful += 1
+                
+                except NoFaceDetectedError:
+                    results.append({
+                        "filename": filename,
+                        "success": False,
+                        "error": "no_face_detected",
+                        "message": "Nenhuma face detectada"
+                    })
+                    failed += 1
+                    no_face_count += 1
                     
                 except Exception as e:
                     results.append({
@@ -245,7 +323,9 @@ def create_app():
                 "results": results,
                 "total": len(files),
                 "successful": successful,
-                "failed": failed
+                "failed": failed,
+                "no_face_detected": no_face_count,
+                "face_detection_used": use_face_detection
             })
             
         except Exception as e:
@@ -261,7 +341,7 @@ def create_app():
     def insert_to_milvus():
         """
         Gera embeddings e insere no Milvus.
-        USA PREPROCESSING CENTRALIZADO.
+        USA PREPROCESSING CENTRALIZADO COM DETECÇÃO FACIAL.
         """
         if 'images' not in request.files:
             return jsonify({"error": "Campo 'images' é obrigatório"}), 400
@@ -282,7 +362,14 @@ def create_app():
                 "error": f"Modelo '{model_name}' não encontrado"
             }), 400
         
-        import json
+        # Parâmetro opcional para controlar detecção facial
+        use_face_detection_param = request.form.get('use_face_detection')
+        if use_face_detection_param is not None:
+            use_face_detection = use_face_detection_param.lower() == 'true'
+        else:
+            use_face_detection = Config.USE_FACE_DETECTION
+        
+        # Paths originais (opcional)
         image_paths_json = request.form.get('image_paths')
         if image_paths_json:
             try:
@@ -300,6 +387,7 @@ def create_app():
             person_ids = []
             paths = []
             errors = []
+            no_face_errors = []
             
             for idx, file in enumerate(files):
                 filename = secure_filename(file.filename)
@@ -309,12 +397,17 @@ def create_app():
                         errors.append(f"{filename}: extensão não permitida")
                         continue
                     
-                    # IMPORTANTE: Usar preprocessing centralizado
+                    # Ler bytes do arquivo
                     file_bytes = file.read()
+                    
+                    # IMPORTANTE: Usar preprocessing centralizado
                     embedding = extract_embedding_standardized(
                         model,
                         file_bytes=file_bytes,
-                        use_tta=Config.USE_TTA
+                        use_tta=Config.USE_TTA,
+                        use_face_detection=use_face_detection,
+                        conf_threshold=Config.FACE_DETECTION_CONF_THRESHOLD,
+                        select_largest=Config.FACE_DETECTION_SELECT_LARGEST
                     )
                     
                     embeddings.append(embedding)
@@ -324,6 +417,10 @@ def create_app():
                         paths.append(original_paths[idx])
                     else:
                         paths.append(filename)
+                
+                except NoFaceDetectedError:
+                    no_face_errors.append(filename)
+                    errors.append(f"{filename}: nenhuma face detectada")
                     
                 except Exception as e:
                     errors.append(f"{filename}: {str(e)}")
@@ -343,11 +440,13 @@ def create_app():
                 "inserted_count": inserted,
                 "collection": client.collection_name,
                 "model": model_name,
-                "person_id": person_id
+                "person_id": person_id,
+                "face_detection_used": use_face_detection
             }
             
             if errors:
                 response["errors"] = errors
+                response["no_face_count"] = len(no_face_errors)
             
             return jsonify(response)
             
@@ -361,7 +460,13 @@ def create_app():
     def search_milvus():
         """
         Busca faces similares no Milvus.
-        USA PREPROCESSING CENTRALIZADO.
+        USA PREPROCESSING CENTRALIZADO COM DETECÇÃO FACIAL.
+        
+        Returns:
+            - 200: busca realizada com sucesso
+            - 400: erro de validação
+            - 422: nenhuma face detectada na imagem de query
+            - 500: erro interno
         """
         if 'image' not in request.files:
             return jsonify({"error": "Campo 'image' é obrigatório"}), 400
@@ -379,16 +484,28 @@ def create_app():
                 "error": f"Modelo '{model_name}' não encontrado"
             }), 400
         
+        # Parâmetro opcional para controlar detecção facial
+        use_face_detection_param = request.form.get('use_face_detection')
+        if use_face_detection_param is not None:
+            use_face_detection = use_face_detection_param.lower() == 'true'
+        else:
+            use_face_detection = Config.USE_FACE_DETECTION
+        
         try:
             model = get_model(model_name)
             client = get_milvus_client()
             
-            # IMPORTANTE: Usar preprocessing centralizado
+            # Ler bytes do arquivo
             file_bytes = file.read()
+            
+            # IMPORTANTE: Usar preprocessing centralizado
             embedding = extract_embedding_standardized(
                 model,
                 file_bytes=file_bytes,
-                use_tta=Config.USE_TTA
+                use_tta=Config.USE_TTA,
+                use_face_detection=use_face_detection,
+                conf_threshold=Config.FACE_DETECTION_CONF_THRESHOLD,
+                select_largest=Config.FACE_DETECTION_SELECT_LARGEST
             )
             
             results = client.search(embedding, top_k=top_k)
@@ -398,8 +515,19 @@ def create_app():
                 "model": model_name,
                 "query_filename": secure_filename(file.filename),
                 "top_k": top_k,
-                "results": results
+                "results": results,
+                "face_detection_used": use_face_detection
             })
+        
+        except NoFaceDetectedError as e:
+            # Erro específico: nenhuma face detectada na imagem de query
+            return jsonify({
+                "success": False,
+                "error": "no_face_detected",
+                "message": "Nenhuma face foi detectada na imagem de busca",
+                "details": str(e),
+                "filename": secure_filename(file.filename)
+            }), 422  # 422 Unprocessable Entity
             
         except Exception as e:
             return jsonify({
@@ -419,7 +547,8 @@ def create_app():
                 "success": True,
                 "collection": client.collection_name,
                 "stats": stats,
-                "all_collections": collections
+                "all_collections": collections,
+                "face_detection_enabled": Config.USE_FACE_DETECTION
             })
             
         except Exception as e:
@@ -449,6 +578,23 @@ def create_app():
             }), 500
     
     # ===========================================
+    # Rota de configuração de detecção facial
+    # ===========================================
+    @app.route('/api/face-detection/status', methods=['GET'])
+    def face_detection_status():
+        """Retorna status da detecção facial."""
+        return jsonify({
+            "available": FACE_DETECTION_AVAILABLE,
+            "enabled": Config.USE_FACE_DETECTION,
+            "config": {
+                "model": Config.FACE_DETECTOR_MODEL,
+                "conf_threshold": Config.FACE_DETECTION_CONF_THRESHOLD,
+                "select_largest": Config.FACE_DETECTION_SELECT_LARGEST,
+                "no_face_policy": Config.FACE_DETECTION_NO_FACE_POLICY
+            }
+        })
+    
+    # ===========================================
     # Error Handlers
     # ===========================================
     @app.errorhandler(413)
@@ -461,6 +607,13 @@ def create_app():
     @app.errorhandler(404)
     def not_found(e):
         return jsonify({"error": "Endpoint não encontrado"}), 404
+    
+    @app.errorhandler(422)
+    def unprocessable_entity(e):
+        return jsonify({
+            "error": "Conteúdo não processável",
+            "message": "A imagem não pôde ser processada. Verifique se contém uma face válida."
+        }), 422
     
     @app.errorhandler(500)
     def server_error(e):
