@@ -22,7 +22,6 @@ class Config:
     # Milvus
     # ===========================================
     MILVUS_DB_PATH = str(DATA_DIR / "milvus_face.db")
-    COLLECTION_NAME = "face_embeddings"
     
     # EMBEDDING_DIM = 1024 (com TTA: 512 original + 512 flipped)
     EMBEDDING_DIM = 1024
@@ -35,43 +34,34 @@ class Config:
     # ===========================================
     # Face Detection (RetinaFace)
     # ===========================================
-    # Habilita/desabilita detecção facial automática
-    # Quando habilitado, todas as imagens passam por:
-    #   1. Detecção de face com RetinaFace
-    #   2. Crop da região facial
-    #   3. Alinhamento usando landmarks (5 pontos)
     USE_FACE_DETECTION = True
-    
-    # Modelo do RetinaFace a ser usado
-    # Opções: "retinaface_mnet_v2" (mais rápido), "retinaface_r50" (mais preciso)
     FACE_DETECTOR_MODEL = "retinaface_mnet_v2"
-    
-    # Limiar de confiança para detecção facial (0.0 a 1.0)
-    # Faces com score abaixo deste valor são descartadas
-    # Valores mais altos = menos falsos positivos, mais falsos negativos
     FACE_DETECTION_CONF_THRESHOLD = 0.35
-    
-    # Quando múltiplas faces são detectadas, qual selecionar:
-    # True = seleciona a MAIOR face (por área do bounding box)
-    # False = seleciona a face com MAIOR CONFIANÇA (score)
     FACE_DETECTION_SELECT_LARGEST = True
-    
-    # Comportamento quando nenhuma face é detectada:
-    # "error" = levanta exceção NoFaceDetectedError
-    # "fallback" = usa imagem original sem alinhamento (não recomendado)
     FACE_DETECTION_NO_FACE_POLICY = "error"
     
     # ===========================================
-    # Modelos
+    # Modelos e Collections
     # ===========================================
-    AVAILABLE_MODELS = ["mobilenetv3_large", "cosface_resnet50"]
+    AVAILABLE_MODELS = ["mobilenetv3_large", "mobilenetv3_large_iti", "cosface_resnet50"]
     DEFAULT_MODEL = "mobilenetv3_large"
     
     # Mapeamento de modelos para seus pesos
     MODEL_WEIGHTS = {
         "mobilenetv3_large": WEIGHTS_DIR / "mobilenetv3_large.ckpt",
+        "mobilenetv3_large_iti": WEIGHTS_DIR / "mobilenetv3_large_iti.ckpt",
         "cosface_resnet50": WEIGHTS_DIR / "resnet50_cosface.ckpt"
     }
+    
+    # Mapeamento de modelos para suas collections
+    MODEL_COLLECTIONS = {
+        "mobilenetv3_large": "face_embeddings_mobilenetv3",
+        "mobilenetv3_large_iti": "face_embeddings_mobilenetv3_iti",
+        "cosface_resnet50": "face_embeddings_cosface"
+    }
+    
+    # Nome padrão da collection (para compatibilidade)
+    COLLECTION_NAME = "face_embeddings_mobilenetv3"
     
     # ===========================================
     # Device (GPU/CPU)
@@ -109,15 +99,15 @@ class Config:
             raise ValueError(f"Modelo '{model_name}' não encontrado. "
                            f"Disponíveis: {cls.AVAILABLE_MODELS}")
         return cls.MODEL_WEIGHTS[model_name]
+        
+    @classmethod
+    def get_collection_name(cls, model_name: str) -> str:
+        """Retorna o nome da collection para um modelo."""
+        return cls.MODEL_COLLECTIONS.get(model_name, cls.COLLECTION_NAME)
     
     @classmethod
     def is_face_detection_available(cls) -> bool:
-        """
-        Verifica se a detecção facial está disponível.
-        
-        Returns:
-            True se uniface está instalado e funcional
-        """
+        """Verifica se a detecção facial está disponível."""
         try:
             from utils.face_detection import is_face_detection_available
             return is_face_detection_available()
@@ -126,14 +116,7 @@ class Config:
     
     @classmethod
     def get_face_detection_config(cls) -> dict:
-        """
-        Retorna as configurações de detecção facial como dict.
-        
-        Útil para passar para funções de preprocessing.
-        
-        Returns:
-            Dict com configurações de detecção facial
-        """
+        """Retorna as configurações de detecção facial como dict."""
         return {
             "enabled": cls.USE_FACE_DETECTION,
             "model": cls.FACE_DETECTOR_MODEL,
@@ -145,15 +128,9 @@ class Config:
     
     @classmethod
     def apply_to_preprocessing(cls):
-        """
-        Aplica as configurações ao módulo de preprocessing.
-        
-        Deve ser chamado na inicialização da aplicação para
-        sincronizar as configurações.
-        """
+        """Aplica as configurações ao módulo de preprocessing."""
         try:
             from preprocessing import set_face_detection_defaults
-            
             set_face_detection_defaults(
                 enabled=cls.USE_FACE_DETECTION,
                 conf_threshold=cls.FACE_DETECTION_CONF_THRESHOLD,
@@ -176,22 +153,20 @@ class Config:
         print()
         print("  --- Milvus ---")
         print(f"  MILVUS_DB:          {cls.MILVUS_DB_PATH}")
-        print(f"  COLLECTION:         {cls.COLLECTION_NAME}")
         print(f"  EMBEDDING_DIM:      {cls.EMBEDDING_DIM}")
         print()
-        print("  --- Modelos ---")
+        print("  --- Modelos e Collections ---")
         print(f"  USE_TTA:            {cls.USE_TTA}")
         print(f"  MODELS:             {cls.AVAILABLE_MODELS}")
         print(f"  DEFAULT_MODEL:      {cls.DEFAULT_MODEL}")
+        for model, collection in cls.MODEL_COLLECTIONS.items():
+            print(f"    - {model}: {collection}")
         print()
         print("  --- Face Detection ---")
         fd_available = cls.is_face_detection_available()
         print(f"  AVAILABLE:          {fd_available}")
         print(f"  USE_FACE_DETECTION: {cls.USE_FACE_DETECTION}")
         print(f"  DETECTOR_MODEL:     {cls.FACE_DETECTOR_MODEL}")
-        print(f"  CONF_THRESHOLD:     {cls.FACE_DETECTION_CONF_THRESHOLD}")
-        print(f"  SELECT_LARGEST:     {cls.FACE_DETECTION_SELECT_LARGEST}")
-        print(f"  NO_FACE_POLICY:     {cls.FACE_DETECTION_NO_FACE_POLICY}")
         print("=" * 60)
 
 
@@ -199,20 +174,13 @@ class Config:
 # Inicialização automática
 # ===========================================
 def init_config():
-    """
-    Inicializa as configurações e aplica ao preprocessing.
-    
-    Deve ser chamado na inicialização da aplicação.
-    """
-    # Verificar se detecção facial está disponível
+    """Inicializa as configurações e aplica ao preprocessing."""
     if Config.USE_FACE_DETECTION:
         if Config.is_face_detection_available():
             print("✓ Face detection enabled and available")
             Config.apply_to_preprocessing()
         else:
             print("⚠️  Face detection enabled but uniface not installed!")
-            print("   Install with: pip install uniface")
-            print("   Face detection will be disabled.")
             Config.USE_FACE_DETECTION = False
 
 
@@ -220,17 +188,7 @@ def init_config():
 # Configuração via variáveis de ambiente
 # ===========================================
 def load_from_env():
-    """
-    Carrega configurações de variáveis de ambiente.
-    
-    Variáveis suportadas:
-        - FACE_DETECTION_ENABLED: "true" ou "false"
-        - FACE_DETECTION_CONF_THRESHOLD: float (0.0 a 1.0)
-        - FACE_DETECTION_SELECT_LARGEST: "true" ou "false"
-        - USE_TTA: "true" ou "false"
-        - EMBEDDING_DIM: int (512 ou 1024)
-    """
-    # Face Detection
+    """Carrega configurações de variáveis de ambiente."""
     if os.environ.get("FACE_DETECTION_ENABLED"):
         Config.USE_FACE_DETECTION = os.environ["FACE_DETECTION_ENABLED"].lower() == "true"
     
@@ -240,7 +198,6 @@ def load_from_env():
     if os.environ.get("FACE_DETECTION_SELECT_LARGEST"):
         Config.FACE_DETECTION_SELECT_LARGEST = os.environ["FACE_DETECTION_SELECT_LARGEST"].lower() == "true"
     
-    # TTA
     if os.environ.get("USE_TTA"):
         Config.USE_TTA = os.environ["USE_TTA"].lower() == "true"
         Config.EMBEDDING_DIM = 1024 if Config.USE_TTA else 512
@@ -249,5 +206,4 @@ def load_from_env():
         Config.EMBEDDING_DIM = int(os.environ["EMBEDDING_DIM"])
 
 
-# Carregar configurações de ambiente automaticamente
 load_from_env()
