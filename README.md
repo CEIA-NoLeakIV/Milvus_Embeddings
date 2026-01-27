@@ -36,6 +36,7 @@ Coloque na pasta `models/weights/` com os nomes:
 ```
 models/weights/
 ├── mobilenetv3_large.ckpt
+├── mobilenetv3_large_iti.ckpt
 └── resnet50_cosface.ckpt
 ```
 
