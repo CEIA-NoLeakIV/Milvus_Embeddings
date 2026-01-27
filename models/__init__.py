@@ -17,15 +17,13 @@ from app.config import Config
 class ModelFactory:
     """
     Factory para criação de modelos de face recognition.
-    
-    Exemplo:
-        >>> model = ModelFactory.create("mobilenetv3_large")
-        >>> embedding = model.extract_embedding_from_path("foto.jpg")  # 1024 dims com TTA
     """
     
     # Registro de modelos disponíveis
+    # Adicionado mobilenetv3_large_iti usando a classe MobileNetModel
     _registry: Dict[str, Type[BaseModel]] = {
         "mobilenetv3_large": MobileNetModel,
+        "mobilenetv3_large_iti": MobileNetModel,
         "cosface_resnet50": CosFaceModel
     }
     
@@ -43,20 +41,6 @@ class ModelFactory:
     ) -> BaseModel:
         """
         Cria ou retorna um modelo pelo nome.
-        
-        Args:
-            model_name: Nome do modelo ('mobilenetv3_large' ou 'cosface_resnet50')
-            weight_path: Caminho para os pesos (opcional, usa default se não informado)
-            device: Dispositivo (opcional, usa Config.DEVICE se não informado)
-            use_cache: Se True, reutiliza modelo já carregado
-            use_tta: Se True, usa TTA (1024 dims). Se None, usa Config.USE_TTA
-            
-        Returns:
-            Instância do modelo
-            
-        Raises:
-            ValueError: Se o modelo não for encontrado
-            FileNotFoundError: Se o arquivo de pesos não existir
         """
         # Verificar se modelo existe
         if model_name not in cls._registry:
@@ -101,31 +85,14 @@ class ModelFactory:
     
     @classmethod
     def get_available_models(cls) -> list:
-        """
-        Retorna lista de modelos disponíveis.
-        
-        Returns:
-            Lista com nomes dos modelos
-        """
         return list(cls._registry.keys())
     
     @classmethod
     def clear_cache(cls):
-        """Limpa o cache de modelos carregados."""
         cls._cache.clear()
     
     @classmethod
     def is_loaded(cls, model_name: str, use_tta: bool = None) -> bool:
-        """
-        Verifica se um modelo está carregado no cache.
-        
-        Args:
-            model_name: Nome do modelo
-            use_tta: Configuração de TTA
-            
-        Returns:
-            True se o modelo está no cache
-        """
         if use_tta is None:
             use_tta = Config.USE_TTA
         cache_key = f"{model_name}_tta_{use_tta}"
@@ -133,29 +100,16 @@ class ModelFactory:
     
     @classmethod
     def register(cls, name: str, model_class: Type[BaseModel]):
-        """
-        Registra um novo modelo.
-        
-        Args:
-            name: Nome do modelo
-            model_class: Classe do modelo (deve herdar de BaseModel)
-        """
         if not issubclass(model_class, BaseModel):
-            raise TypeError(
-                f"model_class deve herdar de BaseModel, "
-                f"recebido: {type(model_class)}"
-            )
+            raise TypeError(f"model_class deve herdar de BaseModel")
         cls._registry[name] = model_class
 
 
 __all__ = [
-    # Classes
     "BaseModel",
     "MobileNetModel",
     "CosFaceModel",
     "ModelFactory",
-    
-    # Funções de conveniência
     "create_mobilenet_model",
     "create_cosface_model"
 ]
