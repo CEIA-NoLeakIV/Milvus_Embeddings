@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT_DIR))
 from .base import BaseModel
 from .mobilenet_model import MobileNetModel, create_mobilenet_model
 from .cosface_model import CosFaceModel, create_cosface_model
+from .topofr_model import TopoFRModel
 
 # Importar configurações
 from app.config import Config
@@ -24,9 +25,14 @@ class ModelFactory:
     _registry: Dict[str, Type[BaseModel]] = {
         "mobilenetv3_large": MobileNetModel,
         "mobilenetv3_large_iti": MobileNetModel,
-        "cosface_resnet50": CosFaceModel
-    }
-    
+        "cosface_resnet50": CosFaceModel,
+	"topofr_r50_ms1mv2": TopoFRModel,
+        "topofr_r100_ms1mv2": TopoFRModel,
+        "topofr_r200_ms1mv2": TopoFRModel,
+        "topofr_r50_glint": TopoFRModel,
+        "topofr_r100_glint": TopoFRModel,
+        "topofr_r200_glint": TopoFRModel
+    }    
     # Cache de modelos carregados
     _cache: Dict[str, BaseModel] = {}
     
