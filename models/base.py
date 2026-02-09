@@ -85,7 +85,7 @@ class BaseModel(ABC):
             new_state_dict[new_key] = value
         
         # Carregar pesos
-        self.model.load_state_dict(new_state_dict)
+        self.model.load_state_dict(new_state_dict, strict=False)
         
         # Mover para device e modo avaliação
         self.model.to(self.device)
