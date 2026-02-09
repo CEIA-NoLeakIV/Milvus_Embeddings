@@ -124,9 +124,11 @@ def main():
                 batch_embeddings, batch_person_ids, batch_image_paths = [], [], []
                 
         except (NoFaceDetectedError, Exception) as e:
-            if not isinstance(e, NoFaceDetectedError) or not args.skip_no_face:
-                pass 
-                
+            if not isinstance(e, NoFaceDetectedError):
+                print(f"\n❌ Erro crítico no arquivo {img_path}: {e}")
+            elif not args.skip_no_face:
+                print(f"\n⚠️ Face não detectada em: {img_path}")
+
     if batch_embeddings:
         milvus.insert(batch_embeddings, batch_person_ids, batch_image_paths)
         total_inserted += len(batch_embeddings)
