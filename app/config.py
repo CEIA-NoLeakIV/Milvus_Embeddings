@@ -51,12 +51,12 @@ class Config:
         "mobilenetv3_large": WEIGHTS_DIR / "mobilenetv3_large.ckpt",
         "mobilenetv3_large_iti": WEIGHTS_DIR / "mobilenetv3_large_iti.ckpt",
         "cosface_resnet50": WEIGHTS_DIR / "resnet50_cosface.ckpt",
-	"topofr_r50_ms1mv2": WEIGHTS_DIR / "MS1MV2_R50_TopoFR_9649.pt",
+	    "topofr_r50_ms1mv2": WEIGHTS_DIR / "MS1MV2_R50_TopoFR_9649.pt",
         "topofr_r100_ms1mv2": WEIGHTS_DIR / "MS1MV2_R100_TopoFR_9695.pt",
         "topofr_r200_ms1mv2": WEIGHTS_DIR / "MS1MV2_R200_TopoFR_9708.pt",
-	"topofr_r50_glint": WEIGHTS_DIR / "Glint360K_R50_TopoFR_9727.pt",
-	"topofr_r100_glint": WEIGHTS_DIR / "Glint360K_R100_TopoFR_9760.pt",
-	"topofr_r200_glint": WEIGHTS_DIR / "Glint360K_R200_TopoFR_9784.pt"
+	    "topofr_r50_glint": WEIGHTS_DIR / "Glint360K_R50_TopoFR_9727.pt",
+	    "topofr_r100_glint": WEIGHTS_DIR / "Glint360K_R100_TopoFR_9760.pt",
+	    "topofr_r200_glint": WEIGHTS_DIR / "Glint360K_R200_TopoFR_9784.pt"
     }
     
     # Mapeamento de modelos para suas collections
@@ -64,12 +64,12 @@ class Config:
         "mobilenetv3_large": "face_embeddings_mobilenetv3",
         "mobilenetv3_large_iti": "face_embeddings_mobilenetv3_iti",
         "cosface_resnet50": "face_embeddings_cosface",
-	"topofr_r50_ms1mv2": "face_embeddings_topofr_r50_ms1mv2",
+	    "topofr_r50_ms1mv2": "face_embeddings_topofr_r50_ms1mv2",
         "topofr_r100_ms1mv2": "face_embeddings_topofr_r100_ms1mv2",
         "topofr_r200_ms1mv2": "face_embeddings_topofr_r200_ms1mv2",
-	"topofr_r50_glint": "face_embeddings_topofr_r50_glint",
-	"topofr_r100_glint": "face_embeddings_topofr_r100_glint",
-	"topofr_r200_glint": "face_embeddings_topofr_r200_glint"
+	    "topofr_r50_glint": "face_embeddings_topofr_r50_glint",
+	    "topofr_r100_glint": "face_embeddings_topofr_r100_glint",
+	    "topofr_r200_glint": "face_embeddings_topofr_r200_glint"
     }
     
     # Nome padrão da collection (para compatibilidade)
