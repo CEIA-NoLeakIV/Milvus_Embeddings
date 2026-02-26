@@ -6,6 +6,7 @@ API para extração de embeddings faciais e busca por similaridade usando Milvus
 
 - **MobileNetV3 Large**
 - **ResNet50 CosFace**
+- **Topo FR**
 
 ## Requisitos
 
@@ -37,7 +38,13 @@ Coloque na pasta `models/weights/` com os nomes:
 models/weights/
 ├── mobilenetv3_large.ckpt
 ├── mobilenetv3_large_iti.ckpt
-└── resnet50_cosface.ckpt
+├── resnet50_cosface.ckpt
+├── topofr_r50_ms1mv2.ckpt
+├── topofr_r100_ms1mv2.ckpt
+├── topofr_r200_ms1mv2.ckpt
+├── topofr_r50_glint.ckpt
+├── topofr_r100_glint.ckpt
+└── topofr_r200_glint.ckpt
 ```
 
 ## Detecção Facial

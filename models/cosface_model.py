@@ -74,9 +74,7 @@ class CosFaceModel(BaseModel):
         return model
 
 
-# ===========================================
 # Função de conveniência
-# ===========================================
 def create_cosface_model(
     weight_path: Union[str, Path],
     device: torch.device = None,

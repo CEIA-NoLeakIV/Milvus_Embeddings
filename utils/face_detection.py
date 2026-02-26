@@ -1,744 +1,450 @@
+"""
+Detecção facial e alinhamento usando SCRFD (InsightFace) + face_align.norm_crop.
+"""
+
 import cv2
 import numpy as np
 from pathlib import Path
 from typing import Union, Optional, Tuple, List
 
-# Importação condicional do uniface
+# ---------------------------------------------------------------------------
+# Importação condicional do InsightFace (SCRFD + face_align)
+# ---------------------------------------------------------------------------
 try:
-    from uniface import RetinaFace
-    UNIFACE_AVAILABLE = True
+    from insightface.model_zoo.scrfd import SCRFD
+    from insightface.utils import face_align
+    INSIGHTFACE_AVAILABLE = True
 except ImportError:
-    UNIFACE_AVAILABLE = False
-    RetinaFace = None
-
-# Importação do skimage para SimilarityTransform
-try:
-    from skimage.transform import SimilarityTransform
-    SKIMAGE_AVAILABLE = True
-except ImportError:
-    SKIMAGE_AVAILABLE = False
-    SimilarityTransform = None
+    INSIGHTFACE_AVAILABLE = False
+    SCRFD = None
+    face_align = None
 
 
-# ===========================================
-# Exceções Customizadas
-# ===========================================
+# ===========================================================================
+# Exceções Customizadas  (mantidas idênticas para compatibilidade)
+# ===========================================================================
 class NoFaceDetectedError(Exception):
-    """Exceção levantada quando nenhuma face é detectada na imagem."""
+    """Levantada quando nenhuma face é detectada na imagem."""
     pass
 
 
 class MultipleFacesDetectedError(Exception):
-    """Exceção levantada quando múltiplas faces são detectadas (se não permitido)."""
+    """Levantada quando múltiplas faces são detectadas (se não permitido)."""
     pass
 
 
-# ===========================================
-# Constantes de Alinhamento (ArcFace Reference)
-# ===========================================
-# Pontos de referência para alinhamento facial no padrão ArcFace
-# Ordem: olho_esquerdo, olho_direito, nariz, boca_esquerda, boca_direita
+# ===========================================================================
+# Constantes
+# ===========================================================================
+# Caminhos padrão onde o SCRFD pode estar presente localmente
+_SCRFD_CANDIDATES = [
+    Path.home() / ".insightface/models/scrfd_10g_bnkps.onnx",
+    Path.home() / ".insightface/models/buffalo_l/det_10g.onnx",
+    Path("models/scrfd_10g_bnkps.onnx"),
+    Path("scrfd_10g_bnkps.onnx"),
+]
+
+# Mantido para compatibilidade com código que importe REFERENCE_ALIGNMENT
 REFERENCE_ALIGNMENT = np.array([
-    [38.2946, 51.6963],  # Olho esquerdo
-    [73.5318, 51.5014],  # Olho direito
-    [56.0252, 71.7366],  # Nariz
-    [41.5493, 92.3655],  # Canto esquerdo da boca
-    [70.7299, 92.2041]   # Canto direito da boca
+    [38.2946, 51.6963],
+    [73.5318, 51.5014],
+    [56.0252, 71.7366],
+    [41.5493, 92.3655],
+    [70.7299, 92.2041],
 ], dtype=np.float32)
 
 
-# ===========================================
-# Funções de Alinhamento
-# ===========================================
-def get_reference_alignment(image_size: int = 112) -> np.ndarray:
+# ===========================================================================
+# Helpers internos
+# ===========================================================================
+def _find_scrfd_model() -> Optional[Path]:
+    """Procura o arquivo .onnx do SCRFD nos caminhos padrão."""
+    for candidate in _SCRFD_CANDIDATES:
+        if Path(candidate).exists():
+            return Path(candidate)
+    return None
+
+
+def _load_image_as_numpy(
+    image: Union[np.ndarray, "PIL.Image.Image", str, Path]
+) -> np.ndarray:
     """
-    Retorna os pontos de referência ajustados para o tamanho da imagem.
-    
+    Converte qualquer fonte de imagem para numpy BGR uint8.
+    Mantida para compatibilidade com detect_and_align_face().
+    """
+    if isinstance(image, np.ndarray):
+        return image
+
+    # PIL Image
+    try:
+        from PIL import Image as PILImage
+        if isinstance(image, PILImage.Image):
+            return cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
+    except ImportError:
+        pass
+
+    # Caminho
+    path = str(image)
+    img = cv2.imread(path)
+    if img is None:
+        raise FileNotFoundError(f"Não foi possível carregar a imagem: {path}")
+    return img
+
+
+def crop_from_bbox(
+    image: np.ndarray,
+    bbox: List[float],
+    image_size: int = 112,
+    expand: float = 1.40,
+) -> np.ndarray:
+    """
+    Fallback: recorta e redimensiona a região da face a partir da bounding box,
+    sem alinhamento de landmarks.  Equivalente ao crop_from_bbox do cropping_vgg.py.
+
     Args:
-        image_size: Tamanho da imagem de saída (112 ou 128)
-    
+        image:      Imagem BGR numpy.
+        bbox:       [x1, y1, x2, y2] em pixels.
+        image_size: Tamanho do crop de saída (quadrado).
+        expand:     Fator de expansão da bbox para incluir contexto.
+
     Returns:
-        Array numpy com os pontos de referência ajustados
+        Crop redimensionado para (image_size, image_size, 3) BGR.
     """
+    h, w = image.shape[:2]
+    x1, y1, x2, y2 = [float(v) for v in bbox]
+
+    # Centro e dimensões
+    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    bw, bh = (x2 - x1) * expand, (y2 - y1) * expand
+
+    # Expandir e clipar
+    nx1 = max(0, int(cx - bw / 2))
+    ny1 = max(0, int(cy - bh / 2))
+    nx2 = min(w, int(cx + bw / 2))
+    ny2 = min(h, int(cy + bh / 2))
+
+    crop = image[ny1:ny2, nx1:nx2]
+    if crop.size == 0:
+        crop = image  # fallback extremo: imagem inteira
+
+    return cv2.resize(crop, (image_size, image_size), interpolation=cv2.INTER_LINEAR)
+
+
+# ===========================================================================
+# Funções públicas de alinhamento (mantidas para compatibilidade)
+# ===========================================================================
+def get_reference_alignment(image_size: int = 112) -> np.ndarray:
+    """Retorna pontos de referência ArcFace ajustados ao tamanho."""
     if image_size % 112 == 0:
-        ratio = float(image_size) / 112.0
-        diff_x = 0.0
+        ratio, diff_x = float(image_size) / 112.0, 0.0
     elif image_size % 128 == 0:
-        ratio = float(image_size) / 128.0
-        diff_x = 8.0 * ratio
+        ratio, diff_x = float(image_size) / 128.0, 8.0 * (float(image_size) / 128.0)
     else:
-        # Fallback para 112
-        ratio = float(image_size) / 112.0
-        diff_x = 0.0
-    
-    alignment = REFERENCE_ALIGNMENT.copy() * ratio
-    alignment[:, 0] += diff_x
-    
-    return alignment
+        ratio, diff_x = float(image_size) / 112.0, 0.0
+
+    ref = REFERENCE_ALIGNMENT.copy() * ratio
+    ref[:, 0] += diff_x
+    return ref
 
 
 def estimate_norm(landmark: np.ndarray, image_size: int = 112) -> np.ndarray:
     """
-    Estima a matriz de transformação de similaridade para alinhar landmarks.
-    
-    Args:
-        landmark: Array (5, 2) com coordenadas dos landmarks faciais
-        image_size: Tamanho da imagem de saída
-    
-    Returns:
-        Matriz de transformação 2x3
-    
-    Raises:
-        AssertionError: Se landmarks não têm shape (5, 2)
-        RuntimeError: Se skimage não está disponível
+    Mantida para compatibilidade.
+    Estima matriz de transformação via SimilarityTransform (skimage).
     """
-    if not SKIMAGE_AVAILABLE:
-        raise RuntimeError(
-            "scikit-image é necessário para alinhamento facial. "
-            "Instale com: pip install scikit-image"
-        )
-    
-    assert landmark.shape == (5, 2), f"Landmark deve ter shape (5, 2), recebido {landmark.shape}"
-    
-    # Obter pontos de referência ajustados
+    try:
+        from skimage.transform import SimilarityTransform
+    except ImportError:
+        raise RuntimeError("scikit-image necessário: pip install scikit-image")
+
+    assert landmark.shape == (5, 2), f"Esperado (5,2), recebido {landmark.shape}"
     reference = get_reference_alignment(image_size)
-    
-    # Calcular transformação de similaridade
     transform = SimilarityTransform()
     transform.estimate(landmark, reference)
-    
-    # Retornar matriz 2x3
-    matrix = transform.params[0:2, :]
-    
-    return matrix
+    return transform.params[0:2, :]
 
 
 def align_face(
     image: np.ndarray,
     landmark: np.ndarray,
-    image_size: int = 112
+    image_size: int = 112,
 ) -> np.ndarray:
     """
-    Alinha a face na imagem usando os landmarks faciais.
-    
-    Esta função aplica uma transformação de similaridade para:
-    1. Rotacionar a face para ficar alinhada
-    2. Escalar para o tamanho desejado
-    3. Centralizar a face na imagem de saída
-    
-    Args:
-        image: Imagem de entrada (numpy array, BGR ou RGB)
-        landmark: Array (5, 2) com coordenadas dos landmarks
-        image_size: Tamanho da imagem de saída (padrão: 112)
-    
-    Returns:
-        Imagem alinhada com tamanho (image_size, image_size, 3)
+    Mantida para compatibilidade.
+    Alinha face via SimilarityTransform+warpAffine (comportamento anterior).
+    O novo pipeline usa norm_crop internamente via FaceDetector.
     """
-    # Obter matriz de transformação
     M = estimate_norm(landmark, image_size)
-    
-    # Aplicar transformação
-    aligned = cv2.warpAffine(
-        image,
-        M,
-        (image_size, image_size),
-        borderValue=0.0
-    )
-    
-    return aligned
+    return cv2.warpAffine(image, M, (image_size, image_size), borderValue=0.0)
 
 
-# ===========================================
-# Classe FaceDetector
-# ===========================================
+# ===========================================================================
+# Classe FaceDetector  (API pública mantida idêntica)
+# ===========================================================================
 class FaceDetector:
     """
-    Detector facial usando RetinaFace (via uniface).
-    
-    Implementa padrão singleton para evitar carregar o modelo múltiplas vezes.
-    
-    Attributes:
-        model_name: Nome do modelo RetinaFace
-        conf_threshold: Limiar de confiança para detecção
-        detector: Instância do RetinaFace
-    
-    Uso:
-        detector = FaceDetector(conf_threshold=0.35)
-        faces = detector.detect(image)
-        aligned = detector.detect_and_align(image)
+    Detector facial usando SCRFD (InsightFace) com alinhamento via norm_crop.
+
+    Mantém a mesma interface pública da versão anterior (RetinaFace/uniface)
+    para compatibilidade com todo o código que importa FaceDetector.
+
+    Singleton: o modelo SCRFD é carregado uma única vez.
     """
-    
+
     _instance = None
     _initialized = False
-    
+
     def __new__(cls, *args, **kwargs):
-        """Implementa singleton pattern."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
-    
+
     def __init__(
         self,
-        model_name: str = "retinaface_mnet_v2",
-        conf_threshold: float = 0.35
+        model_name: str = "scrfd_10g_bnkps",   # mantido como parâmetro p/ compatibilidade
+        conf_threshold: float = 0.35,
+        image_size: int = 112,
+        expand_fallback: float = 1.40,
     ):
         """
-        Inicializa o detector facial.
-        
         Args:
-            model_name: Nome do modelo (retinaface_mnet_v2 ou retinaface_r50)
-            conf_threshold: Limiar de confiança (0.0 a 1.0)
+            model_name:       Ignorado (mantido para compatibilidade de assinatura).
+            conf_threshold:   Limiar de confiança do SCRFD.
+            image_size:       Tamanho de saída do crop alinhado.
+            expand_fallback:  Fator de expansão da bbox no fallback sem landmarks.
         """
-        # Evitar reinicialização do singleton
-        if FaceDetector._initialized:
+        if self._initialized:
             return
-        
-        if not UNIFACE_AVAILABLE:
+
+        if not INSIGHTFACE_AVAILABLE:
             raise ImportError(
-                "uniface é necessário para detecção facial. "
-                "Instale com: pip install uniface"
+                "insightface é necessário: pip install insightface\n"
+                "Baixe o modelo SCRFD:\n"
+                "  wget -O ~/.insightface/models/scrfd_10g_bnkps.onnx \\\n"
+                "    https://huggingface.co/DIAMONIK7777/antelopev2/resolve/main/scrfd_10g_bnkps.onnx"
             )
-        
-        self.model_name = model_name
+
         self.conf_threshold = conf_threshold
-        self.detector = None
-        
-        # Inicializar detector
-        self._init_detector()
-        
-        FaceDetector._initialized = True
-    
-    def _init_detector(self):
-        """Inicializa o modelo RetinaFace."""
-        try:
-            # A API do uniface usa confidence_threshold
-            self.detector = RetinaFace(
-                confidence_threshold=self.conf_threshold
+        self.image_size = image_size
+        self.expand_fallback = expand_fallback
+
+        # Localizar e carregar SCRFD
+        scrfd_path = _find_scrfd_model()
+        if scrfd_path is None:
+            raise FileNotFoundError(
+                "Modelo SCRFD não encontrado. Baixe com:\n"
+                "  wget -O ~/.insightface/models/scrfd_10g_bnkps.onnx \\\n"
+                "    https://huggingface.co/DIAMONIK7777/antelopev2/resolve/main/scrfd_10g_bnkps.onnx"
             )
-            print(f"✓ FaceDetector initialized: {self.model_name} (conf={self.conf_threshold})")
-        except Exception as e:
-            raise RuntimeError(f"Erro ao inicializar RetinaFace: {e}")
-    
+
+        self.detector = SCRFD(model_file=str(scrfd_path))
+        # det_thresh e input_size são passados no prepare(), não no detect()
+        self.detector.prepare(ctx_id=-1, det_thresh=conf_threshold, input_size=(640, 640))
+
+        self.__class__._initialized = True
+        print(f"✓ FaceDetector initialized: SCRFD ({scrfd_path.name}, conf={conf_threshold})")
+
+    # ------------------------------------------------------------------
+    # Método de detecção bruta (retorna lista de dicts como antes)
+    # ------------------------------------------------------------------
     def detect(self, image: np.ndarray) -> List[dict]:
         """
-        Detecta faces na imagem.
-        
+        Detecta faces e retorna lista de dicts com 'box', 'landmarks' e 'score'.
+
         Args:
-            image: Imagem numpy (RGB ou BGR)
-        
+            image: numpy BGR.
+
         Returns:
-            Lista de dicionários com informações das faces detectadas:
-            [
-                {
-                    'box': [x1, y1, x2, y2],
-                    'landmarks': np.array shape (5, 2),
-                    'score': float
-                },
-                ...
-            ]
+            Lista ordenada por score (maior primeiro).
+            Cada item: {'box': [x1,y1,x2,y2], 'landmarks': np.ndarray(5,2), 'score': float}
         """
-        if self.detector is None:
-            self._init_detector()
-        
-        # uniface.RetinaFace.detect() retorna uma lista de objetos Face
-        faces_raw = self.detector.detect(image)
-        
-        # Converter para formato padronizado
+        # SCRFD espera BGR; retorna bboxes (N,5) e kps (N,5,2)
+        # det_thresh e input_size são configurados no prepare(), não aqui
+        bboxes, kps = self.detector.detect(image)
+
+        if bboxes is None or len(bboxes) == 0:
+            return []
+
         faces = []
-        
-        if faces_raw is None:
-            return faces
-        
-        # Iterar sobre as faces detectadas
-        for face in faces_raw:
-            face_dict = self._parse_face_object(face)
-            if face_dict is not None:
-                faces.append(face_dict)
-        
-        # Ordenar por score (maior primeiro)
-        faces.sort(key=lambda x: x['score'], reverse=True)
-        
+        for i, bbox in enumerate(bboxes):
+            x1, y1, x2, y2, score = bbox
+            landmarks = kps[i] if kps is not None and i < len(kps) else None
+            faces.append({
+                "box": [float(x1), float(y1), float(x2), float(y2)],
+                "landmarks": landmarks,   # np.ndarray (5,2) ou None
+                "score": float(score),
+            })
+
+        # Ordenar por score decrescente
+        faces.sort(key=lambda f: f["score"], reverse=True)
         return faces
-    
-    def _parse_face_object(self, face) -> Optional[dict]:
-        """
-        Parseia um objeto Face do uniface para dict padronizado.
-        
-        O uniface pode retornar diferentes formatos dependendo da versão.
-        Esta função tenta múltiplas formas de extrair os dados.
-        """
-        face_dict = {}
-        
-        try:
-            # ===== BOUNDING BOX =====
-            bbox = None
-            
-            # Tentar atributo bbox
-            if hasattr(face, 'bbox'):
-                bbox = face.bbox
-            elif hasattr(face, 'box'):
-                bbox = face.box
-            
-            if bbox is not None:
-                if hasattr(bbox, 'tolist'):
-                    face_dict['box'] = bbox.tolist()
-                elif hasattr(bbox, '__iter__'):
-                    face_dict['box'] = list(bbox)
-                else:
-                    return None
-            else:
-                return None
-            
-            # ===== LANDMARKS =====
-            landmarks = None
-            
-            # Tentar atributo landmarks ou kps
-            if hasattr(face, 'landmarks'):
-                landmarks = face.landmarks
-            elif hasattr(face, 'kps'):
-                landmarks = face.kps
-            elif hasattr(face, 'keypoints'):
-                landmarks = face.keypoints
-            
-            if landmarks is not None:
-                landmarks = np.array(landmarks)
-                # Garantir shape (5, 2)
-                if landmarks.size == 10:
-                    landmarks = landmarks.reshape(5, 2)
-                elif landmarks.shape == (5, 2):
-                    pass
-                else:
-                    # Tentar usar os primeiros 10 valores
-                    landmarks = landmarks.flatten()[:10].reshape(5, 2)
-                
-                face_dict['landmarks'] = landmarks.astype(np.float32)
-            else:
-                return None
-            
-            # ===== SCORE =====
-            score = 1.0
-            
-            if hasattr(face, 'det_score'):
-                score = float(face.det_score)
-            elif hasattr(face, 'score'):
-                score = float(face.score)
-            elif hasattr(face, 'confidence'):
-                score = float(face.confidence)
-            
-            face_dict['score'] = score
-            
-            return face_dict
-            
-        except Exception as e:
-            print(f"Warning: Failed to parse face object: {e}")
-            return None
-    
+
+    # ------------------------------------------------------------------
+    # Seleção de face
+    # ------------------------------------------------------------------
     def detect_largest_face(
-        self,
-        image: np.ndarray
+        self, image: np.ndarray
     ) -> Tuple[Optional[List], Optional[np.ndarray]]:
-        """
-        Detecta e retorna a maior face na imagem.
-        
-        Args:
-            image: Imagem numpy
-        
-        Returns:
-            Tuple (box, landmarks) ou (None, None) se nenhuma face
-        """
+        """Retorna (box, landmarks) da face com maior área."""
         faces = self.detect(image)
-        
         if not faces:
             return None, None
-        
-        # Encontrar face com maior área
-        largest_face = None
-        largest_area = 0
-        
-        for face in faces:
-            box = face['box']
-            area = (box[2] - box[0]) * (box[3] - box[1])
-            if area > largest_area:
-                largest_area = area
-                largest_face = face
-        
-        if largest_face is None:
-            return None, None
-        
-        return largest_face['box'], largest_face['landmarks']
-    
+
+        largest = max(
+            faces,
+            key=lambda f: (f["box"][2] - f["box"][0]) * (f["box"][3] - f["box"][1]),
+        )
+        return largest["box"], largest["landmarks"]
+
     def detect_most_confident_face(
-        self,
-        image: np.ndarray
+        self, image: np.ndarray
     ) -> Tuple[Optional[List], Optional[np.ndarray]]:
-        """
-        Detecta e retorna a face com maior score de confiança.
-        
-        Args:
-            image: Imagem numpy
-        
-        Returns:
-            Tuple (box, landmarks) ou (None, None) se nenhuma face
-        """
+        """Retorna (box, landmarks) da face com maior score de confiança."""
         faces = self.detect(image)
-        
         if not faces:
             return None, None
-        
-        # Faces já estão ordenadas por score
-        best_face = faces[0]
-        
-        return best_face['box'], best_face['landmarks']
-    
+        best = faces[0]  # já ordenado por score
+        return best["box"], best["landmarks"]
+
+    # ------------------------------------------------------------------
+    # Alinhamento principal
+    # ------------------------------------------------------------------
     def detect_and_align(
         self,
         image: np.ndarray,
         image_size: int = 112,
-        select_largest: bool = True
+        select_largest: bool = True,
     ) -> np.ndarray:
         """
         Detecta face e retorna imagem alinhada.
-        
+
+        Usa face_align.norm_crop (InsightFace) quando landmarks estão disponíveis.
+        Usa crop_from_bbox como fallback quando landmarks não são detectados.
+
         Args:
-            image: Imagem numpy (RGB ou BGR)
-            image_size: Tamanho da saída
-            select_largest: Se True, seleciona maior face; senão, mais confiante
-        
+            image:          numpy BGR.
+            image_size:     Tamanho de saída do crop.
+            select_largest: Se True, seleciona maior face; senão, mais confiante.
+
         Returns:
-            Imagem alinhada (image_size, image_size, 3)
-        
+            Crop alinhado (image_size, image_size, 3) BGR.
+
         Raises:
-            NoFaceDetectedError: Se nenhuma face for detectada
+            NoFaceDetectedError: Quando nenhuma face é detectada.
         """
         if select_largest:
             box, landmarks = self.detect_largest_face(image)
         else:
             box, landmarks = self.detect_most_confident_face(image)
-        
-        if landmarks is None:
-            raise NoFaceDetectedError("Nenhuma face detectada na imagem")
-        
-        return align_face(image, landmarks, image_size)
-    
+
+        if box is None:
+            raise NoFaceDetectedError("Nenhuma face detectada na imagem.")
+
+        if landmarks is not None:
+            # Alinhamento completo com norm_crop (InsightFace)
+            aligned = face_align.norm_crop(image, landmark=landmarks, image_size=image_size)
+            return aligned
+        else:
+            # Fallback: crop simples expandido a partir da bbox
+            return crop_from_bbox(image, box, image_size=image_size, expand=self.expand_fallback)
+
     def get_detection_info(self, image: np.ndarray) -> dict:
-        """
-        Retorna informações detalhadas sobre as detecções.
-        
-        Args:
-            image: Imagem numpy
-        
-        Returns:
-            Dict com informações das detecções
-        """
+        """Retorna informações detalhadas das detecções."""
         faces = self.detect(image)
-        
         return {
-            'num_faces': len(faces),
-            'faces': faces,
-            'image_size': image.shape[:2]
+            "num_faces": len(faces),
+            "faces": faces,
+            "image_size": image.shape[:2],
         }
 
 
-# ===========================================
-# Funções de Conveniência (API Funcional)
-# ===========================================
-_detector_instance = None
+# ===========================================================================
+# API Funcional (compatibilidade total com código existente)
+# ===========================================================================
+_detector_instance: Optional[FaceDetector] = None
 
 
 def _get_detector(conf_threshold: float = 0.35) -> FaceDetector:
-    """Obtém instância singleton do detector."""
+    """Retorna instância singleton do FaceDetector."""
     global _detector_instance
-    
     if _detector_instance is None:
         _detector_instance = FaceDetector(conf_threshold=conf_threshold)
-    
     return _detector_instance
 
 
 def detect_and_align_face(
-    image: Union[np.ndarray, 'PIL.Image.Image', str, Path],
+    image: Union[np.ndarray, "PIL.Image.Image", str, Path],
     image_size: int = 112,
     conf_threshold: float = 0.35,
     select_largest: bool = True,
-    return_info: bool = False
+    return_info: bool = False,
 ) -> Union[np.ndarray, Tuple[np.ndarray, dict]]:
     """
-    Detecta e alinha face em uma imagem.
-    
-    Esta é a função principal de conveniência para uso simplificado.
-    
+    Detecta e alinha face em uma imagem.  API pública mantida idêntica.
+
     Args:
-        image: Imagem (numpy array, PIL Image, ou caminho)
-        image_size: Tamanho da saída (padrão: 112)
-        conf_threshold: Limiar de confiança do detector
-        select_largest: Se True, seleciona maior face
-        return_info: Se True, retorna também informações da detecção
-    
+        image:          numpy, PIL Image ou caminho.
+        image_size:     Tamanho de saída (padrão: 112).
+        conf_threshold: Limiar de confiança do detector.
+        select_largest: Se True, seleciona maior face.
+        return_info:    Se True, retorna também informações da detecção.
+
     Returns:
-        Se return_info=False: Array numpy (image_size, image_size, 3) RGB
-        Se return_info=True: Tuple (aligned_face, detection_info)
-    
+        Array numpy (image_size, image_size, 3) BGR  — ou  (aligned, info).
+
     Raises:
-        NoFaceDetectedError: Se nenhuma face for detectada
-    
-    Exemplo:
-        # Uso simples
-        aligned = detect_and_align_face("foto.jpg")
-        
-        # Com informações
-        aligned, info = detect_and_align_face("foto.jpg", return_info=True)
-        print(f"Faces detectadas: {info['num_faces']}")
+        NoFaceDetectedError: Se nenhuma face for detectada.
     """
-    # Converter para numpy se necessário
     image_np = _load_image_as_numpy(image)
-    
-    # Obter detector
     detector = _get_detector(conf_threshold)
-    
-    # Detectar e alinhar
+
     aligned = detector.detect_and_align(
-        image_np,
-        image_size=image_size,
-        select_largest=select_largest
+        image_np, image_size=image_size, select_largest=select_largest
     )
-    
+
     if return_info:
         info = detector.get_detection_info(image_np)
         return aligned, info
-    
+
     return aligned
 
 
 def detect_faces(
-    image: Union[np.ndarray, 'PIL.Image.Image', str, Path],
-    conf_threshold: float = 0.35
-) -> List[dict]:
-    """
-    Detecta todas as faces em uma imagem.
-    
-    Args:
-        image: Imagem (numpy array, PIL Image, ou caminho)
-        conf_threshold: Limiar de confiança
-    
-    Returns:
-        Lista de dicionários com informações das faces
-    """
-    image_np = _load_image_as_numpy(image)
-    detector = _get_detector(conf_threshold)
-    return detector.detect(image_np)
-
-
-def detect_and_align_face_pil(
-    image: Union[np.ndarray, 'PIL.Image.Image', str, Path],
-    image_size: int = 112,
+    image: Union[np.ndarray, "PIL.Image.Image", str, Path],
     conf_threshold: float = 0.35,
-    select_largest: bool = True
-) -> 'PIL.Image.Image':
-    """
-    Detecta e alinha face, retornando PIL Image.
-    
-    Args:
-        image: Imagem de entrada
-        image_size: Tamanho da saída
-        conf_threshold: Limiar de confiança
-        select_largest: Selecionar maior face
-    
-    Returns:
-        PIL Image com face alinhada
-    
-    Raises:
-        NoFaceDetectedError: Se nenhuma face detectada
-    """
-    from PIL import Image as PILImage
-    
-    aligned_np = detect_and_align_face(
-        image,
-        image_size=image_size,
-        conf_threshold=conf_threshold,
-        select_largest=select_largest
-    )
-    
-    return PILImage.fromarray(aligned_np)
-
-
-# ===========================================
-# Funções Auxiliares
-# ===========================================
-def _load_image_as_numpy(
-    image: Union[np.ndarray, 'PIL.Image.Image', str, Path]
-) -> np.ndarray:
-    """
-    Carrega imagem de várias fontes e retorna numpy array RGB.
-    
-    Args:
-        image: numpy array, PIL Image, ou caminho para arquivo
-    
-    Returns:
-        Numpy array (H, W, 3) em RGB
-    """
-    # Se já é numpy array
-    if isinstance(image, np.ndarray):
-        # Assumir que pode ser BGR (OpenCV) ou RGB
-        # Manter como está - o detector lida com ambos
-        return image
-    
-    # Se é string ou Path (caminho para arquivo)
-    if isinstance(image, (str, Path)):
-        # Usar OpenCV para carregar (retorna BGR)
-        image_cv = cv2.imread(str(image))
-        if image_cv is None:
-            raise FileNotFoundError(f"Não foi possível carregar imagem: {image}")
-        # Converter BGR para RGB
-        return cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB)
-    
-    # Se é PIL Image
-    try:
-        from PIL import Image as PILImage
-        if isinstance(image, PILImage.Image):
-            # Converter para RGB se necessário
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-            return np.array(image)
-    except ImportError:
-        pass
-    
-    raise TypeError(f"Tipo de imagem não suportado: {type(image)}")
+) -> List[dict]:
+    """Detecta todas as faces em uma imagem."""
+    image_np = _load_image_as_numpy(image)
+    return _get_detector(conf_threshold).detect(image_np)
 
 
 def is_face_detection_available() -> bool:
-    """
-    Verifica se a detecção facial está disponível.
-    
-    Returns:
-        True se uniface e skimage estão instalados
-    """
-    return UNIFACE_AVAILABLE and SKIMAGE_AVAILABLE
+    """Retorna True se insightface está instalado."""
+    return INSIGHTFACE_AVAILABLE
 
 
 def draw_detection(
     image: np.ndarray,
     faces: List[dict],
     color: Tuple[int, int, int] = (0, 255, 0),
-    thickness: int = 2
+    thickness: int = 2,
 ) -> np.ndarray:
-    """
-    Desenha bounding boxes e landmarks na imagem.
-    
-    Args:
-        image: Imagem numpy
-        faces: Lista de detecções do método detect()
-        color: Cor do desenho (BGR)
-        thickness: Espessura das linhas
-    
-    Returns:
-        Imagem com desenhos
-    """
+    """Desenha bounding boxes e landmarks na imagem."""
     output = image.copy()
-    
     for face in faces:
-        box = face['box']
-        landmarks = face['landmarks']
-        score = face.get('score', 0)
-        
-        # Desenhar bounding box
+        box = face["box"]
+        landmarks = face.get("landmarks")
+        score = face.get("score", 0)
+
         x1, y1, x2, y2 = map(int, box)
         cv2.rectangle(output, (x1, y1), (x2, y2), color, thickness)
-        
-        # Desenhar score
         cv2.putText(
-            output,
-            f"{score:.2f}",
-            (x1, y1 - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            color,
-            thickness
+            output, f"{score:.2f}", (x1, y1 - 10),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, thickness,
         )
-        
-        # Desenhar landmarks
-        for point in landmarks:
-            x, y = map(int, point)
-            cv2.circle(output, (x, y), 2, (0, 0, 255), -1)
-    
+        if landmarks is not None:
+            for point in landmarks:
+                cx, cy = map(int, point)
+                cv2.circle(output, (cx, cy), 2, (0, 0, 255), -1)
+
     return output
-
-
-# ===========================================
-# Script de teste
-# ===========================================
-if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Test face detection module")
-    parser.add_argument("--image", type=str, required=True, help="Path to test image")
-    parser.add_argument("--output", type=str, default=None, help="Output path for aligned face")
-    parser.add_argument("--conf", type=float, default=0.35, help="Confidence threshold")
-    parser.add_argument("--draw", action="store_true", help="Draw detections on image")
-    args = parser.parse_args()
-    
-    print("=" * 60)
-    print("Face Detection Module - Test")
-    print("=" * 60)
-    
-    # Verificar disponibilidade
-    print(f"\nuniFace available: {UNIFACE_AVAILABLE}")
-    print(f"scikit-image available: {SKIMAGE_AVAILABLE}")
-    
-    if not is_face_detection_available():
-        print("\n✗ Face detection not available!")
-        print("Install requirements: pip install uniface scikit-image")
-        exit(1)
-    
-    # Carregar imagem
-    print(f"\nLoading image: {args.image}")
-    image = cv2.imread(args.image)
-    if image is None:
-        print(f"✗ Failed to load image: {args.image}")
-        exit(1)
-    
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    print(f"✓ Image loaded: {image.shape}")
-    
-    # Detectar faces
-    print(f"\nDetecting faces (conf={args.conf})...")
-    try:
-        aligned, info = detect_and_align_face(
-            image_rgb,
-            conf_threshold=args.conf,
-            return_info=True
-        )
-        
-        print(f"✓ Face detected!")
-        print(f"  Num faces: {info['num_faces']}")
-        print(f"  Aligned shape: {aligned.shape}")
-        
-        if info['faces']:
-            best_face = info['faces'][0]
-            print(f"  Best score: {best_face['score']:.3f}")
-            print(f"  Box: {best_face['box']}")
-        
-        # Salvar resultado
-        if args.output:
-            aligned_bgr = cv2.cvtColor(aligned, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(args.output, aligned_bgr)
-            print(f"\n✓ Aligned face saved to: {args.output}")
-        
-        # Desenhar detecções
-        if args.draw:
-            drawn = draw_detection(image, info['faces'])
-            draw_path = args.output.replace('.', '_drawn.') if args.output else 'detection_result.jpg'
-            cv2.imwrite(draw_path, drawn)
-            print(f"✓ Detection visualization saved to: {draw_path}")
-        
-    except NoFaceDetectedError as e:
-        print(f"✗ No face detected: {e}")
-        exit(1)
-    except Exception as e:
-        print(f"✗ Error: {e}")
-        import traceback
-        traceback.print_exc()
-        exit(1)
-    
-    print("\n" + "=" * 60)
-    print("Test completed successfully!")
-    print("=" * 60)
