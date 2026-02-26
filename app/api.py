@@ -31,9 +31,7 @@ except ImportError:
         pass
 
 
-# ===========================================
 # Variáveis globais (lazy loading)
-# ===========================================
 _models = {}
 _milvus_clients = {}  # Agora é um dicionário para suportar múltiplas collections
 
@@ -68,9 +66,7 @@ def get_milvus_client(collection_name: str = None):
     return _milvus_clients[collection_name]
 
 
-# ===========================================
 # Factory da aplicação Flask
-# ===========================================
 def create_app():
     """Cria e configura a aplicação Flask."""
     
@@ -133,9 +129,7 @@ def create_app():
             "face_detection_enabled": Config.USE_FACE_DETECTION
         })
     
-    # ===========================================
     # Rotas de Embedding
-    # ===========================================
     @app.route('/api/embedding', methods=['POST'])
     def generate_embedding():
         if 'image' not in request.files:
@@ -248,9 +242,7 @@ def create_app():
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
 
-    # ===========================================
     # Rotas do Milvus (Insert/Search)
-    # ===========================================
     @app.route('/api/milvus/insert', methods=['POST'])
     def insert_to_milvus():
         if 'images' not in request.files:

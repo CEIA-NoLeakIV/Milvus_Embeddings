@@ -59,9 +59,7 @@ class MobileNetModel(BaseModel):
         return model
 
 
-# ===========================================
 # Função de conveniência
-# ===========================================
 def create_mobilenet_model(
     weight_path: Union[str, Path],
     device: torch.device = None,

@@ -26,7 +26,7 @@ class ModelFactory:
         "mobilenetv3_large": MobileNetModel,
         "mobilenetv3_large_iti": MobileNetModel,
         "cosface_resnet50": CosFaceModel,
-	"topofr_r50_ms1mv2": TopoFRModel,
+	    "topofr_r50_ms1mv2": TopoFRModel,
         "topofr_r100_ms1mv2": TopoFRModel,
         "topofr_r200_ms1mv2": TopoFRModel,
         "topofr_r50_glint": TopoFRModel,

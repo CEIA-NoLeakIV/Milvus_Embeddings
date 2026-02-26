@@ -9,9 +9,7 @@ from PIL import Image
 from torchvision import transforms
 
 
-# ===========================================
 # Importação do módulo de detecção facial
-# ===========================================
 try:
     from utils.face_detection import (
         detect_and_align_face,
@@ -27,9 +25,7 @@ except ImportError:
     print("   Face detection will be disabled.")
 
 
-# ===========================================
 # Configurações de Pré-processamento
-# ===========================================
 IMAGE_SIZE = (112, 112)
 NORMALIZE_MEAN = (0.5, 0.5, 0.5)
 NORMALIZE_STD = (0.5, 0.5, 0.5)
@@ -42,9 +38,8 @@ DEFAULT_FACE_CONF_THRESHOLD = 0.35
 DEFAULT_SELECT_LARGEST_FACE = True
 
 
-# ===========================================
+
 # Transform ÚNICO (usado em TODO lugar)
-# ===========================================
 _transform = transforms.Compose([
     transforms.Resize(IMAGE_SIZE, interpolation=transforms.InterpolationMode.BILINEAR),
     transforms.ToTensor(),
@@ -71,9 +66,7 @@ _transform_aligned_flip = transforms.Compose([
 ])
 
 
-# ===========================================
 # Função de Carregamento Padronizada
-# ===========================================
 def load_image_standardized(
     file_path: Optional[Union[str, Path]] = None,
     pil_image: Optional[Image.Image] = None,
@@ -135,9 +128,7 @@ def load_image_standardized(
     return image
 
 
-# ===========================================
 # Função de Detecção e Alinhamento Facial
-# ===========================================
 def detect_and_align_face_from_pil(
     pil_image: Image.Image,
     conf_threshold: float = DEFAULT_FACE_CONF_THRESHOLD,
@@ -237,9 +228,7 @@ def load_and_align_face(
         return image, False
 
 
-# ===========================================
 # Função de Pré-processamento Principal
-# ===========================================
 def preprocess_image(
     file_path: Optional[Union[str, Path]] = None,
     pil_image: Optional[Image.Image] = None,
@@ -325,9 +314,7 @@ def preprocess_image(
     return tensor
 
 
-# ===========================================
 # Extração de Embedding Padronizada
-# ===========================================
 def extract_embedding_standardized(
     model,
     file_path: Optional[Union[str, Path]] = None,
@@ -406,12 +393,17 @@ def extract_embedding_standardized(
             embedding = model.model(tensor)
             embedding = embedding.squeeze().cpu().numpy()
     
+    # Normalização L2: garante vetor unitário antes de inserir/buscar no Milvus.
+    # Complementa a normalização em milvus_client.py para cobrir usos diretos
+    # desta função (ex: scripts externos, testes, populatemilvus.py).
+    norm = np.linalg.norm(embedding)
+    if norm > 0.0:
+        embedding = embedding / norm
+    
     return embedding
 
 
-# ===========================================
 # Classe Wrapper para Modelos
-# ===========================================
 class StandardizedModelWrapper:
     """
     Wrapper que força uso do pré-processamento padronizado.
@@ -507,9 +499,7 @@ class StandardizedModelWrapper:
         )
 
 
-# ===========================================
 # Funções de Verificação
-# ===========================================
 def verify_preprocessing_consistency(image_path: str) -> dict:
     """
     Verifica se o pré-processamento é consistente entre diferentes fontes.
@@ -569,9 +559,7 @@ def verify_face_detection_available() -> dict:
     }
 
 
-# ===========================================
 # Configuração Global (pode ser alterada em runtime)
-# ===========================================
 def set_face_detection_defaults(
     enabled: bool = None,
     conf_threshold: float = None,
@@ -602,9 +590,7 @@ def set_face_detection_defaults(
     print(f"  select_largest={DEFAULT_SELECT_LARGEST_FACE}")
 
 
-# ===========================================
 # Main (para testes)
-# ===========================================
 if __name__ == "__main__":
     import argparse
     
