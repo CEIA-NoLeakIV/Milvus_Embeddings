@@ -7,6 +7,7 @@ API para extração de embeddings faciais e busca por similaridade usando Milvus
 - **MobileNetV3 Large**
 - **ResNet50 CosFace**
 - **Topo FR**
+- **LV Face**
 
 ## Requisitos
 

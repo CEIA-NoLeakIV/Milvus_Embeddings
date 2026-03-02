@@ -10,6 +10,7 @@ from .base import BaseModel
 from .mobilenet_model import MobileNetModel, create_mobilenet_model
 from .cosface_model import CosFaceModel, create_cosface_model
 from .topofr_model import TopoFRModel
+from .lvface_model import LVFaceModel
 
 # Importar configurações
 from app.config import Config
@@ -23,16 +24,18 @@ class ModelFactory:
     # Registro de modelos disponíveis
     # Adicionado mobilenetv3_large_iti usando a classe MobileNetModel
     _registry: Dict[str, Type[BaseModel]] = {
-        "mobilenetv3_large": MobileNetModel,
+        "mobilenetv3_large":     MobileNetModel,
         "mobilenetv3_large_iti": MobileNetModel,
-        "cosface_resnet50": CosFaceModel,
-	    "topofr_r50_ms1mv2": TopoFRModel,
-        "topofr_r100_ms1mv2": TopoFRModel,
-        "topofr_r200_ms1mv2": TopoFRModel,
-        "topofr_r50_glint": TopoFRModel,
-        "topofr_r100_glint": TopoFRModel,
-        "topofr_r200_glint": TopoFRModel
-    }    
+        "cosface_resnet50":      CosFaceModel,
+        "topofr_r50_ms1mv2":     TopoFRModel,
+        "topofr_r100_ms1mv2":    TopoFRModel,
+        "topofr_r200_ms1mv2":    TopoFRModel,
+        "topofr_r50_glint":      TopoFRModel,
+        "topofr_r100_glint":     TopoFRModel,
+        "topofr_r200_glint":     TopoFRModel,
+        "lvface_b_glint":        LVFaceModel,
+    }
+    
     # Cache de modelos carregados
     _cache: Dict[str, BaseModel] = {}
     
@@ -115,7 +118,9 @@ __all__ = [
     "BaseModel",
     "MobileNetModel",
     "CosFaceModel",
+    "TopoFRModel",
+    "LVFaceModel",
     "ModelFactory",
     "create_mobilenet_model",
-    "create_cosface_model"
+    "create_cosface_model",
 ]
