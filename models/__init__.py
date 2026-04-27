@@ -12,10 +12,6 @@ from .cosface_model import CosFaceModel, create_cosface_model
 from .topofr_model import TopoFRModel
 from .lvface_model import LVFaceModel
 
-# Importar configurações
-from app.config import Config
-
-
 class ModelFactory:
     """
     Factory para criação de modelos de face recognition.
@@ -59,21 +55,23 @@ class ModelFactory:
                 f"Disponíveis: {available}"
             )
         
+        from app.config import Config  # lazy import to avoid circular dependency
+
         # Usar TTA do Config se não especificado
         if use_tta is None:
             use_tta = Config.USE_TTA
-        
+
         # Chave do cache inclui configuração de TTA
         cache_key = f"{model_name}_tta_{use_tta}"
-        
+
         # Verificar cache
         if use_cache and cache_key in cls._cache:
             return cls._cache[cache_key]
-        
+
         # Obter caminho dos pesos
         if weight_path is None:
             weight_path = Config.get_model_weight_path(model_name)
-        
+
         # Obter device
         if device is None:
             device = Config.DEVICE
@@ -103,6 +101,7 @@ class ModelFactory:
     @classmethod
     def is_loaded(cls, model_name: str, use_tta: bool = None) -> bool:
         if use_tta is None:
+            from app.config import Config  # lazy import
             use_tta = Config.USE_TTA
         cache_key = f"{model_name}_tta_{use_tta}"
         return cache_key in cls._cache
