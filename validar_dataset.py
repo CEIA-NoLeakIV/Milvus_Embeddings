@@ -24,9 +24,16 @@ import sys
 import json
 import logging
 import argparse
+import warnings
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+
+# Silenciar FutureWarning de modulos third-party (deprecations upstream que
+# nao afetam a execucao). Mantemos warnings de outros pacotes visiveis.
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"insightface\..*")
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"face_module\..*")
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"timm\..*")
 
 import numpy as np
 from tqdm import tqdm

@@ -1,9 +1,16 @@
 import os
 import sys
 import argparse
+import warnings
 from pathlib import Path
 from datetime import datetime
 from tqdm import tqdm
+
+# Silenciar FutureWarning de modulos third-party (deprecations upstream que
+# nao afetam a execucao). Mantemos warnings de outros pacotes visiveis.
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"insightface\..*")
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"face_module\..*")
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"timm\..*")
 
 ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
