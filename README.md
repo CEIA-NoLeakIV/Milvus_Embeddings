@@ -106,6 +106,36 @@ python failure_analysis.py --model topofr_r100_glint --top-n 50 --only-failures
 
 Gera: `per_image_results.csv`, `per_identity_results.csv`, `confusion_pairs.csv`, `summary.json` e, opcionalmente, `visual_report.html` com cards lado a lado (query vs. erro).
 
+### Construir Dataset de Validação Externa
+
+Coleta imagens via Bing com as identidades do LFW, validando cada imagem com TopoFR antes de aceitar:
+
+```bash
+python construir_dataset_sanityframework_lfw.py --lfw-dir lfw
+python construir_dataset_sanityframework_lfw.py --lfw-dir lfw --images-per-id 10
+python construir_dataset_sanityframework_lfw.py --lfw-dir lfw --sim-threshold 0.25
+python construir_dataset_sanityframework_lfw.py --lfw-dir lfw --start-from 500
+python construir_dataset_sanityframework_lfw.py --lfw-dir lfw --dry-run
+python construir_dataset_sanityframework_lfw.py --lfw-dir lfw --check-watermarks
+python construir_dataset_sanityframework_lfw.py --lfw-dir lfw --check-face-count
+```
+
+**Sanity Framework:** cada imagem baixada passa por 6 critérios antes de ser aceita — integridade, resolução mínima (112px), deduplicação global por hash perceptual, anti-leak LFW (distância Hamming), exatamente 1 face detectada pelo SCRFD, e similaridade coseno TopoFR ≥ 0.30 contra o embedding de referência LFW da identidade. Saída em `dataset_ext_val_lfw/`.
+
+### Validar Dataset
+
+Popula o Milvus com o `dataset_ext_val_lfw` e avalia todos os modelos com disponibilidade de pesos:
+
+```bash
+python validar_dataset.py
+python validar_dataset.py --models topofr_r100_glint lvface_b_glint
+python validar_dataset.py --recreate
+python validar_dataset.py --skip-populate
+python validar_dataset.py --complete 3
+```
+
+Avaliação **leave-one-out** em dois cenários: identidades completas (≥ 5 imagens) e todas as identidades (≥ 2 imagens). Gera `avaliacao_modelos.md` com tabela comparativa (HR@1, HR@5, MRR, AUC, Sim Genuína, Gap) e JSONs individuais por modelo em `resultados/`.
+
 ## Endpoints da API
 
 | Método | Endpoint | Descrição |
@@ -155,31 +185,32 @@ curl -X POST http://localhost:5000/api/embedding \
 ## Estrutura
 
 ```
-├── app/                      # API Flask
-│   ├── api.py                # Rotas e endpoints
-│   ├── config.py             # Configurações centralizadas
-│   └── milvus_client.py      # Cliente Milvus com normalização L2
+├── app/                                     # API Flask
+│   ├── api.py                               # Rotas e endpoints
+│   ├── config.py                            # Configurações centralizadas
+│   └── milvus_client.py                     # Cliente Milvus com normalização L2
 ├── models/
-│   ├── base.py               # BaseModel (classe abstrata)
-│   ├── mobilenet_model.py    # MobileNetV3
-│   ├── cosface_model.py      # CosFace ResNet-50
-│   ├── topofr_model.py       # TopoFR (R50/R100/R200)
-│   ├── lvface_model.py       # LVFace ViT-B
-│   ├── __init__.py           # ModelFactory
-│   └── weights/              # Pesos dos modelos
+│   ├── base.py                              # BaseModel (classe abstrata)
+│   ├── mobilenet_model.py                   # MobileNetV3
+│   ├── cosface_model.py                     # CosFace ResNet-50
+│   ├── topofr_model.py                      # TopoFR (R50/R100/R200)
+│   ├── lvface_model.py                      # LVFace ViT-B
+│   ├── __init__.py                          # ModelFactory
+│   └── weights/                             # Pesos dos modelos
 ├── face_module/
-│   ├── TopoFR/               # Código-fonte TopoFR
-│   ├── TransFace/            # Código-fonte TransFace
-│   └── LVFace/               # Código-fonte LVFace (ViT)
+│   ├── TopoFR/                              # Código-fonte TopoFR
+│   ├── TransFace/                           # Código-fonte TransFace
+│   └── LVFace/                              # Código-fonte LVFace (ViT)
 ├── utils/
-│   └── face_detection.py     # SCRFD + norm_crop
-├── streamlit_app/            # Interface web
-├── tests/                    # Testes (pytest)
-├── data/                     # Banco Milvus (auto-gerado)
-├── preprocessing.py          # Pré-processamento padronizado + TTA
-├── evaluate.py               # Avaliação (LFW, CelebA, custom)
-├── populatemilvus.py         # Popular banco por modelo
-├── failure_analysis.py       # Diagnóstico leave-one-out
-├── run_api.py                # Iniciar API
-└── run_streamlit.py          # Iniciar Streamlit
+│   └── face_detection.py                    # SCRFD + norm_crop
+├── streamlit_app/                           # Interface web
+├── tests/                                   # Testes (pytest)
+├── data/                                    # Banco Milvus (auto-gerado)
+├── preprocessing.py                         # Pré-processamento padronizado + TTA
+├── populatemilvus.py                        # Popular banco por modelo
+├── failure_analysis.py                      # Diagnóstico leave-one-out
+├── construir_dataset_sanityframework_lfw.py # Coletar dataset de validação externa
+├── validar_dataset.py                       # Avaliar modelos no dataset externo
+├── run_api.py                               # Iniciar API
+└── run_streamlit.py                         # Iniciar Streamlit
 ```
