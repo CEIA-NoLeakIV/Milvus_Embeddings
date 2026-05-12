@@ -4,9 +4,10 @@ API para extração de embeddings faciais e busca por similaridade usando Milvus
 
 ## Modelos Disponíveis
 
-- **MobileNetV3 Large**
-- **ResNet50 CosFace**
-- **Topo FR**
+- **MobileNetV3 Large** (`mobilenetv3_large`, `mobilenetv3_large_iti`)
+- **ResNet50 CosFace** (`cosface_resnet50`)
+- **TopoFR** — variantes R50/R100/R200 treinadas em MS1MV2 (`topofr_r50_ms1mv2`, `topofr_r100_ms1mv2`, `topofr_r200_ms1mv2`) e em Glint360K (`topofr_r50_glint`, `topofr_r100_glint`, `topofr_r200_glint`)
+- **LVFace** — variante B treinada em Glint360K (`lvface_b_glint`)
 
 ## Requisitos
 
@@ -32,20 +33,25 @@ pip install -r requirements.txt
 
 Baixe os pesos em: **https://huggingface.co/NoLeak/Embeddings-Models/tree/main**
 
-Coloque na pasta `models/weights/` com os nomes:
+Coloque na pasta `models/weights/` com os nomes exatos abaixo (são os esperados por `Config.MODEL_WEIGHTS`):
 
 ```
 models/weights/
 ├── mobilenetv3_large.ckpt
 ├── mobilenetv3_large_iti.ckpt
 ├── resnet50_cosface.ckpt
-├── topofr_r50_ms1mv2.ckpt
-├── topofr_r100_ms1mv2.ckpt
-├── topofr_r200_ms1mv2.ckpt
-├── topofr_r50_glint.ckpt
-├── topofr_r100_glint.ckpt
-└── topofr_r200_glint.ckpt
+├── MS1MV2_R50_TopoFR_9649.pt
+├── MS1MV2_R100_TopoFR_9695.pt
+├── MS1MV2_R200_TopoFR_9708.pt
+├── Glint360K_R50_TopoFR_9727.pt
+├── Glint360K_R100_TopoFR_9760.pt
+├── Glint360K_R200_TopoFR_9784.pt
+└── LVFace-B_Glint360K.pt
 ```
+
+> Você não precisa baixar todos — qualquer script que itera sobre modelos
+> (ex.: `validar_dataset.py`) usa `models_with_weights()` para descobrir
+> quais pesos estão presentes em disco e roda apenas esses.
 
 ## Detecção Facial
 
@@ -163,20 +169,25 @@ curl -X POST http://localhost:5000/api/embedding \
 ## Estrutura
 
 ```
-├── app/                  # API Flask
+├── app/                                      # API Flask
 │   ├── api.py
-│   ├── config.py
-│   └── milvus_client.py
+│   ├── config.py                             # Modelos, pesos, collections, paths
+│   └── milvus_client.py                      # Wrapper Milvus (insert/search/purge)
+├── data/                                     # Banco Milvus (auto-gerado)
+├── face_module/                              # Forks adaptados: TopoFR, LVFace, TransFace
 ├── models/
-│   ├── architectures/    # Redes neurais
-│   └── weights/          # Pesos (.ckpt)
-├── utils/                # Utilitários
-│   └── face_detection.py # Detecção e alinhamento facial
-├── streamlit_app/        # Interface web
-├── tests/                # Testes
-├── data/                 # Banco Milvus (auto-gerado)
-├── preprocessing.py      # Pré-processamento centralizado
-├── populatemilvus.py     # Popular banco
-├── run_api.py            # Iniciar API
-└── run_streamlit.py      # Iniciar Streamlit
+│   ├── architectures/                        # Redes neurais (iresnet, mobilenetv3, ...)
+│   └── weights/                              # Pesos (.ckpt / .pt)
+├── streamlit_app/                            # Interface web
+├── tests/                                    # Testes
+├── utils/
+│   └── face_detection.py                     # SCRFD + alinhamento facial
+├── construir_dataset_sanityframework_lfw.py  # Pipeline atual: crawl + 6 critérios sanity
+├── failure_analysis.py                       # Análise de falhas + triagem manual + enrichment
+├── populatemilvus.py                         # Popular Milvus (1 collection/modelo, destrutivo)
+├── preprocessing.py                          # Pré-processamento centralizado
+├── requirements.txt                          # Lista com dependências necessárias
+├── run_api.py                                # Iniciar API Flask
+├── run_streamlit.py                          # Iniciar Streamlit
+└── validar_dataset.py                        # Popular + avaliar modelos (leave-one-out, HR@1/5, MRR, AUC)
 ```
