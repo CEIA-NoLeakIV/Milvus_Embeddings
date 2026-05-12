@@ -4,8 +4,10 @@ validar_dataset.py — Popula Milvus e avalia modelos no dataset_ext_val_lfw
 ===========================================================================
 Fluxo automático:
   1. Descobre quais modelos têm arquivo de pesos disponível
-  2. Para cada modelo, verifica se a collection _lfw_ext_val está populada
-     com a quantidade certa de imagens — se não, popula agora
+  2. Para cada modelo, usa a collection canônica (Config.get_collection_name)
+     — convenção: 1 collection por modelo. Se não estiver populada com a
+     quantidade certa de imagens, popula agora (purge total + recreate quando
+     --recreate é passado).
   3. Avalia cada modelo com leave-one-out nos dois cenários:
        Caso 1 — identidades completas (>= --complete imgs)
        Caso 2 — todas as identidades
@@ -70,7 +72,10 @@ DEFAULT_COMPLETE    = 5
 DEFAULT_MIN_EVAL    = 2   # min imgs/id para entrar no cenario "todas"
 TOP_K               = 10
 BATCH_SIZE          = 64
-COLL_SUFFIX         = "_lfw_ext_val"   # distingue do _ext_val do dataset antigo
+# Convencao "uma collection por modelo": usamos diretamente o nome canonico
+# definido em Config.MODEL_COLLECTIONS, sem sufixos. Variantes herdadas
+# (_lfw_ext_val, _ext_val) sao limpas pelo MilvusClient.purge_model_collections
+# quando --recreate e passado, ou pelo populatemilvus.py em qualquer execucao.
 
 logging.basicConfig(level=logging.CRITICAL)
 log = logging.getLogger("validar")
@@ -120,7 +125,8 @@ def models_with_weights() -> List[str]:
 
 
 def collection_name(model_key: str) -> str:
-    return Config.get_collection_name(model_key) + COLL_SUFFIX
+    """Nome canonico da collection do modelo (1 collection por modelo)."""
+    return Config.get_collection_name(model_key)
 
 
 def _raw_client():
@@ -172,6 +178,13 @@ def populate(
     Config.EMBEDDING_DIM = 1024
 
     model = ModelFactory.create(model_key, use_tta=True, use_cache=False)
+
+    if recreate:
+        # Politica "uma collection por modelo": purga canonico + qualquer
+        # variante herdada antes de recriar. Faz isso ANTES do MilvusClient
+        # criar a collection canonica, senao o purge derruba a recem-criada.
+        MilvusClient.purge_model_collections(model_key)
+
     milvus = MilvusClient(collection_name=coll)
 
     if recreate:
@@ -357,7 +370,7 @@ def generate_report(
         f"",
         f"**Data:** {datetime.now().strftime('%Y-%m-%d %H:%M')}  ",
         f"**Dataset:** `dataset_ext_val_lfw/`  ",
-        f"**Avaliação:** leave-one-out nas collections `{COLL_SUFFIX}`  ",
+        f"**Avaliação:** leave-one-out (1 collection por modelo, nome canônico em `Config.MODEL_COLLECTIONS`)  ",
         f"**Banco Milvus:** `{Path(Config.MILVUS_DB_PATH).name}`",
         f"",
         f"---",
@@ -550,7 +563,7 @@ def main():
 
         # Salvar métricas individuais
         date_str = datetime.now().strftime("%Y%m%d")
-        json_path = RESULTS_DIR / f"metricas_{mk}_lfw_ext_val_{date_str}.json"
+        json_path = RESULTS_DIR / f"metricas_{mk}_{date_str}.json"
         json_path.write_text(
             json.dumps({"complete": r1, "all": r2, "ts": datetime.now().isoformat()},
                        indent=2, ensure_ascii=False),

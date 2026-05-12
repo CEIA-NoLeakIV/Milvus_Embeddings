@@ -223,3 +223,41 @@ class MilvusClient:
             print(f"✓ Collection '{self.collection_name}' removida.")
         self._ensure_collection()
         print(f"✓ Collection '{self.collection_name}' recriada.")
+
+    @staticmethod
+    def purge_model_collections(model_name: str, db_path: Optional[str] = None) -> List[str]:
+        """
+        Politica "uma collection por modelo": dropa TODAS as collections
+        relacionadas a um modelo antes de uma nova populacao.
+
+        Inclui:
+          - O nome canonico (Config.get_collection_name(model_name))
+          - Qualquer variante com sufixo (ex: nome_canonico + "_lfw_ext_val",
+            "_ext_val", etc) — herancas de versoes anteriores quando o codigo
+            permitia multiplas collections por modelo.
+
+        Retorna a lista de collections dropadas (vazia se nada existia).
+        """
+        canonical = Config.get_collection_name(model_name)
+        actual_db = db_path or Config.MILVUS_DB_PATH
+
+        client = PyMilvusClient(actual_db)
+        try:
+            existing = client.list_collections() or []
+        except Exception:
+            existing = []
+
+        # Dropa o canonico + qualquer variante "canonical_<sufixo>"
+        to_drop = [
+            c for c in existing
+            if c == canonical or c.startswith(canonical + "_")
+        ]
+
+        for coll in to_drop:
+            try:
+                client.drop_collection(coll)
+                print(f"  ✓ Collection removida: {coll}")
+            except Exception as e:
+                print(f"  ⚠ Falha ao dropar '{coll}': {e}")
+
+        return to_drop
