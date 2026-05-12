@@ -35,12 +35,18 @@ LFW_DIR = ROOT_DIR / "lfw"
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Popular Milvus")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Popular Milvus. POLITICA DESTRUTIVA: rodar este script para um "
+            "modelo SEMPRE apaga qualquer collection existente daquele "
+            "modelo (canonico + variantes com sufixo herdadas) e recria "
+            "do zero. Convencao atual: 1 collection por modelo/peso."
+        ),
+    )
     parser.add_argument("--model", type=str, default="mobilenetv3_large", choices=Config.AVAILABLE_MODELS)
     parser.add_argument("--lfw-dir", type=str, default=str(LFW_DIR))
     parser.add_argument("--batch-size", type=int, default=50)
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--recreate", action="store_true")
     parser.add_argument("--no-tta", action="store_true")
     parser.add_argument("--no-face-detection", action="store_true")
     parser.add_argument("--skip-no-face", action="store_true")
@@ -90,12 +96,16 @@ def main():
     model = ModelFactory.create(args.model, use_tta=use_tta)
     
     print("\n[2/4] Conectando ao Milvus...")
-    # Conecta especificamente na collection do modelo escolhido
+    # Politica "uma collection por modelo": antes de criar a collection
+    # canonica deste modelo, dropa qualquer variante existente (canonico
+    # + sufixos herdados como _lfw_ext_val). Garante que so reste UMA
+    # collection por modelo apos o populate.
+    print(f"Limpando collections existentes do modelo '{args.model}'...")
+    dropped = MilvusClient.purge_model_collections(args.model)
+    if not dropped:
+        print(f"  (nenhuma collection previa encontrada)")
+
     milvus = MilvusClient(collection_name=collection_name)
-    
-    if args.recreate:
-        print(f"Recriando collection '{collection_name}'...")
-        milvus.recreate_collection()
     
     print("\n[3/4] Listando imagens...")
     image_files = get_image_files(args.lfw_dir)

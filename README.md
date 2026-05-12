@@ -4,12 +4,9 @@ API para extração de embeddings faciais e busca por similaridade usando Milvus
 
 ## Modelos Disponíveis
 
-- **MobileNetV3 Large** — `mobilenetv3_large` / `mobilenetv3_large_iti`
-- **ResNet50 CosFace** — `cosface_resnet50`
-- **TopoFR** — `topofr_r{50,100,200}_{ms1mv2,glint}`
-- **LVFace ViT-B** — `lvface_b_glint`
-
-Todos os modelos são gerenciados pelo `ModelFactory` com lazy loading e cache automático.
+- **MobileNetV3 Large**
+- **ResNet50 CosFace**
+- **Topo FR**
 
 ## Requisitos
 
@@ -19,12 +16,15 @@ Todos os modelos são gerenciados pelo `ModelFactory` com lazy loading e cache a
 ## Instalação
 
 ```bash
+# Clonar repositório
 git clone <seu-repositorio>
 cd Milvus_Embeddings
 
+# Criar ambiente virtual
 python3 -m venv venv
 source venv/bin/activate
 
+# Instalar dependências
 pip install -r requirements.txt
 ```
 
@@ -32,45 +32,65 @@ pip install -r requirements.txt
 
 Baixe os pesos em: **https://huggingface.co/NoLeak/Embeddings-Models/tree/main**
 
-Coloque na pasta `models/weights/`:
+Coloque na pasta `models/weights/` com os nomes:
 
 ```
 models/weights/
 ├── mobilenetv3_large.ckpt
 ├── mobilenetv3_large_iti.ckpt
 ├── resnet50_cosface.ckpt
-├── MS1MV2_R50_TopoFR_9649.pt
-├── MS1MV2_R100_TopoFR_9695.pt
-├── MS1MV2_R200_TopoFR_9708.pt
-├── Glint360K_R50_TopoFR_9727.pt
-├── Glint360K_R100_TopoFR_9760.pt
-├── Glint360K_R200_TopoFR_9784.pt
-└── LVFace-B_Glint360K.pt
+├── topofr_r50_ms1mv2.ckpt
+├── topofr_r100_ms1mv2.ckpt
+├── topofr_r200_ms1mv2.ckpt
+├── topofr_r50_glint.ckpt
+├── topofr_r100_glint.ckpt
+└── topofr_r200_glint.ckpt
 ```
 
-## Pipeline de Processamento
+## Detecção Facial
 
-```
-Imagem → SCRFD (detecção) → norm_crop (alinhamento 112×112) → Embedding (512-d) → TTA (1024-d) → L2 Norm → Milvus
-```
+O sistema utiliza **RetinaFace** (via uniface) para detecção, crop e alinhamento facial automático. Isso garante que apenas a região da face seja processada, melhorando a qualidade dos embeddings.
 
-**Detecção facial:** SCRFD (InsightFace) com `face_align.norm_crop` para alinhamento. Configurações padrão: threshold de confiança 0.35, seleção da maior face quando múltiplas são detectadas.
+Pipeline de processamento:
+1. Detecção de face com RetinaFace
+2. Extração de landmarks (5 pontos)
+3. Alinhamento facial usando transformação de similaridade
+4. Crop para 112x112 pixels
+5. Extração do embedding
 
-**TTA (Test-Time Augmentation):** Concatenação do embedding original (512-d) com o embedding da imagem espelhada horizontalmente, gerando vetores de 1024 dimensões.
-
-**Pré-processamento:** Centralizado em `preprocessing.py` via `extract_embedding_standardized()`, garantindo consistência entre API, Streamlit, scripts e testes. Aceita imagens de qualquer fonte (path, bytes, stream, PIL).
+Configurações padrão:
+- **Threshold de confiança:** 0.35
+- **Seleção:** Maior face (quando múltiplas detectadas)
 
 ## Comandos
 
 ### Popular o banco
 
+> **Convenção: 1 collection por modelo/peso.**
+> Cada modelo tem **exatamente uma** collection Milvus (nome em
+> `Config.MODEL_COLLECTIONS`). Rodar `populatemilvus.py` para um modelo é uma
+> operação **destrutiva**: apaga qualquer collection daquele modelo
+> (canônica + variantes herdadas com sufixo, ex: `_lfw_ext_val`, `_ext_val`)
+> e cria uma nova do zero. Isso elimina o risco de várias collections do
+> mesmo modelo coexistindo com dados divergentes.
+
 ```bash
 python populatemilvus.py
 ```
 
-Opções: `--model cosface_resnet50`, `--limit 100`, `--recreate`, `--no-face-detection`, `--skip-no-face`, `--face-conf 0.35`
+Opções:
+- `--model cosface_resnet50` — usar outro modelo (default: `mobilenetv3_large`)
+- `--lfw-dir <path>` — diretório das imagens (default: `./lfw`)
+- `--limit 100` — limitar quantidade de imagens
+- `--no-face-detection` — desabilitar detecção facial
+- `--skip-no-face` — pular silenciosamente imagens sem face detectada
+- `--face-conf 0.35` — ajustar threshold de confiança da detecção
 
-Cada modelo popula sua própria collection (`face_embeddings_<modelo>`).
+> **Não existe mais `--recreate`** — todo `populate` é destrutivo por design.
+> Scripts que consomem a collection (`failure_analysis.py`, `validar_dataset.py`,
+> API, Streamlit) derivam o nome **automaticamente** do `--model` via
+> `Config.get_collection_name(model)`; nenhum deles aceita override de nome
+> de collection.
 
 ### Rodar a API
 
@@ -78,7 +98,7 @@ Cada modelo popula sua própria collection (`face_embeddings_<modelo>`).
 python run_api.py
 ```
 
-A API roda em `http://localhost:5000`. Opções: `--host`, `--port`, `--debug`
+A API roda em `http://localhost:5000`
 
 ### Rodar o Streamlit
 
@@ -93,48 +113,6 @@ Interface em `http://localhost:8501`
 ```bash
 pytest tests/ -v
 ```
-
-### Failure Analysis
-
-Diagnóstico por imagem usando leave-one-out no Milvus:
-
-```bash
-python failure_analysis.py --model topofr_r100_glint
-python failure_analysis.py --model topofr_r100_glint --visual-report
-python failure_analysis.py --model topofr_r100_glint --top-n 50 --only-failures
-```
-
-Gera: `per_image_results.csv`, `per_identity_results.csv`, `confusion_pairs.csv`, `summary.json` e, opcionalmente, `visual_report.html` com cards lado a lado (query vs. erro).
-
-### Construir Dataset de Validação Externa
-
-Coleta imagens via Bing com as identidades do LFW, validando cada imagem com TopoFR antes de aceitar:
-
-```bash
-python construir_dataset_sanityframework_lfw.py --lfw-dir lfw
-python construir_dataset_sanityframework_lfw.py --lfw-dir lfw --images-per-id 10
-python construir_dataset_sanityframework_lfw.py --lfw-dir lfw --sim-threshold 0.25
-python construir_dataset_sanityframework_lfw.py --lfw-dir lfw --start-from 500
-python construir_dataset_sanityframework_lfw.py --lfw-dir lfw --dry-run
-python construir_dataset_sanityframework_lfw.py --lfw-dir lfw --check-watermarks
-python construir_dataset_sanityframework_lfw.py --lfw-dir lfw --check-face-count
-```
-
-**Sanity Framework:** cada imagem baixada passa por 6 critérios antes de ser aceita — integridade, resolução mínima (112px), deduplicação global por hash perceptual, anti-leak LFW (distância Hamming), exatamente 1 face detectada pelo SCRFD, e similaridade coseno TopoFR ≥ 0.30 contra o embedding de referência LFW da identidade. Saída em `dataset_ext_val_lfw/`.
-
-### Validar Dataset
-
-Popula o Milvus com o `dataset_ext_val_lfw` e avalia todos os modelos com disponibilidade de pesos:
-
-```bash
-python validar_dataset.py
-python validar_dataset.py --models topofr_r100_glint lvface_b_glint
-python validar_dataset.py --recreate
-python validar_dataset.py --skip-populate
-python validar_dataset.py --complete 3
-```
-
-Avaliação **leave-one-out** em dois cenários: identidades completas (≥ 5 imagens) e todas as identidades (≥ 2 imagens). Gera `avaliacao_modelos.md` com tabela comparativa (HR@1, HR@5, MRR, AUC, Sim Genuína, Gap) e JSONs individuais por modelo em `resultados/`.
 
 ## Endpoints da API
 
@@ -155,7 +133,7 @@ Avaliação **leave-one-out** em dois cenários: identidades completas (≥ 5 im
 ```bash
 curl -X POST http://localhost:5000/api/milvus/search \
   -F "image=@foto.jpg" \
-  -F "model=topofr_r100_glint" \
+  -F "model=mobilenetv3_large" \
   -F "top_k=5"
 ```
 
@@ -163,7 +141,7 @@ curl -X POST http://localhost:5000/api/milvus/search \
 ```bash
 curl -X POST http://localhost:5000/api/milvus/insert \
   -F "images=@foto.jpg" \
-  -F "model=topofr_r100_glint" \
+  -F "model=mobilenetv3_large" \
   -F "person_id=pessoa_123"
 ```
 
@@ -171,46 +149,34 @@ curl -X POST http://localhost:5000/api/milvus/insert \
 ```bash
 curl -X POST http://localhost:5000/api/embedding \
   -F "image=@foto.jpg" \
-  -F "model=topofr_r100_glint"
+  -F "model=mobilenetv3_large"
 ```
 
 **Gerar embedding sem detecção facial:**
 ```bash
 curl -X POST http://localhost:5000/api/embedding \
   -F "image=@foto.jpg" \
-  -F "model=topofr_r100_glint" \
+  -F "model=mobilenetv3_large" \
   -F "use_face_detection=false"
 ```
 
 ## Estrutura
 
 ```
-├── app/                                     # API Flask
-│   ├── api.py                               # Rotas e endpoints
-│   ├── config.py                            # Configurações centralizadas
-│   └── milvus_client.py                     # Cliente Milvus com normalização L2
+├── app/                  # API Flask
+│   ├── api.py
+│   ├── config.py
+│   └── milvus_client.py
 ├── models/
-│   ├── base.py                              # BaseModel (classe abstrata)
-│   ├── mobilenet_model.py                   # MobileNetV3
-│   ├── cosface_model.py                     # CosFace ResNet-50
-│   ├── topofr_model.py                      # TopoFR (R50/R100/R200)
-│   ├── lvface_model.py                      # LVFace ViT-B
-│   ├── __init__.py                          # ModelFactory
-│   └── weights/                             # Pesos dos modelos
-├── face_module/
-│   ├── TopoFR/                              # Código-fonte TopoFR
-│   ├── TransFace/                           # Código-fonte TransFace
-│   └── LVFace/                              # Código-fonte LVFace (ViT)
-├── utils/
-│   └── face_detection.py                    # SCRFD + norm_crop
-├── streamlit_app/                           # Interface web
-├── tests/                                   # Testes (pytest)
-├── data/                                    # Banco Milvus (auto-gerado)
-├── preprocessing.py                         # Pré-processamento padronizado + TTA
-├── populatemilvus.py                        # Popular banco por modelo
-├── failure_analysis.py                      # Diagnóstico leave-one-out
-├── construir_dataset_sanityframework_lfw.py # Coletar dataset de validação externa
-├── validar_dataset.py                       # Avaliar modelos no dataset externo
-├── run_api.py                               # Iniciar API
-└── run_streamlit.py                         # Iniciar Streamlit
+│   ├── architectures/    # Redes neurais
+│   └── weights/          # Pesos (.ckpt)
+├── utils/                # Utilitários
+│   └── face_detection.py # Detecção e alinhamento facial
+├── streamlit_app/        # Interface web
+├── tests/                # Testes
+├── data/                 # Banco Milvus (auto-gerado)
+├── preprocessing.py      # Pré-processamento centralizado
+├── populatemilvus.py     # Popular banco
+├── run_api.py            # Iniciar API
+└── run_streamlit.py      # Iniciar Streamlit
 ```

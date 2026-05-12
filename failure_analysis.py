@@ -22,6 +22,10 @@ Uso:
   python failure_analysis.py --model topofr_r100_glint --only-failures
   python failure_analysis.py --model topofr_r100_glint --visual-report
   python failure_analysis.py --model topofr_r100_glint --visual-report --max-visual 100
+  python failure_analysis.py --model topofr_r100_glint --manual-triage
+
+Convencao: 1 collection por modelo. O nome da collection vem sempre de
+Config.get_collection_name(model) — nao ha flag para sobrescrever.
 """
 
 import os
@@ -51,7 +55,8 @@ from app.milvus_client import MilvusClient
 # =========================================================================
 MILVUS_QUERY_BATCH_SIZE = 300     # Milvus Lite limita ~64MB por query; 300×1024×4B≈1.2MB
 SEARCH_TOP_K = 11                 # top_k para busca (10 + 1 self-match)
-MAX_RANK_TRACK = 10               # Rastrear rank do match correto até rank N
+# MAX_RANK_TRACK era hardcoded em 10 — substituído por (top_k - 1) dentro de
+# leave_one_out_search para refletir corretamente buscas com --search-top-k > 11.
 
 
 def parse_args():
@@ -61,19 +66,18 @@ def parse_args():
         epilog="""
 Exemplos:
   python failure_analysis.py --model topofr_r100_glint
-  python failure_analysis.py --model topofr_r100_glint --collection face_embeddings_topofr_r100_glint_ext_val
   python failure_analysis.py --model cosface_resnet50 --top-n 30
   python failure_analysis.py --model topofr_r100_glint --only-failures --output-dir ./reports
+  python failure_analysis.py --model topofr_r100_glint --visual-report --manual-triage
+
+Convencao: 1 collection por modelo. O nome da collection vem sempre de
+Config.get_collection_name(model) — nao ha flag para sobrescrever.
         """
     )
     parser.add_argument(
         "--model", type=str, required=True,
         choices=Config.AVAILABLE_MODELS,
-        help="Nome do modelo (determina a collection Milvus)"
-    )
-    parser.add_argument(
-        "--collection", type=str, default=None,
-        help="Nome da collection Milvus (sobrescreve o mapeamento automático do --model)"
+        help="Nome do modelo (determina a collection Milvus via Config.get_collection_name)"
     )
     parser.add_argument(
         "--top-n", type=int, default=None,
@@ -102,6 +106,18 @@ Exemplos:
     parser.add_argument(
         "--max-visual", type=int, default=200,
         help="Máximo de falhas a incluir no relatório visual (default: 200)"
+    )
+    parser.add_argument(
+        "--manual-triage", action="store_true",
+        help=("Gera manual_triage.csv com 1 linha por falha + colunas vazias para "
+              "marcação manual (barba, oculos, pose, luz...) + colunas auto_* "
+              "enriquecidas via cv2 e insightface (age, gender, yaw/pitch/roll, blur).")
+    )
+    parser.add_argument(
+        "--no-insightface-enrich", action="store_true",
+        help=("Pula o enriquecimento via insightface FaceAnalysis (mantém apenas "
+              "métricas cv2: brightness, contrast, blur, face_area_ratio). "
+              "Use se buffalo_l não estiver disponível ou para acelerar a análise.")
     )
     return parser.parse_args()
 
@@ -242,8 +258,11 @@ def leave_one_out_search(
             top1_similarity = top1.get("distance", 0.0)
             hr1_hit = (top1_person == query_person)
 
-            # Encontrar rank do primeiro match correto
-            for rank, neighbor in enumerate(neighbors[:MAX_RANK_TRACK], start=1):
+            # Rastreia rank do match correto até top_k-1 (descontando o self-match
+            # que já foi removido). Antes era hardcoded em 10, mascarando hits
+            # entre 10 e top_k quando o usuário aumentava --search-top-k.
+            max_rank_track = top_k - 1
+            for rank, neighbor in enumerate(neighbors[:max_rank_track], start=1):
                 if neighbor.get("person_id") == query_person:
                     correct_rank = rank
                     break
@@ -268,16 +287,21 @@ def leave_one_out_search(
 # =========================================================================
 
 def compute_per_identity_stats(results: List[Dict]) -> List[Dict]:
-    """Agrega HR@1 por identidade."""
-    identity_data = defaultdict(lambda: {"total": 0, "hits": 0, "failures": []})
+    """
+    Agrega HR@1 por identidade. Antes guardava `failure_details` (lista
+    completa de falhas por identidade) em memoria, mas isso nunca era
+    consumido downstream — `failures` e sempre recalculado direto de
+    `results`. Removido para economizar ~30% de RAM em datasets grandes.
+    """
+    identity_data: Dict[str, Dict[str, int]] = defaultdict(
+        lambda: {"total": 0, "hits": 0}
+    )
 
     for r in results:
         pid = r["query_person_id"]
         identity_data[pid]["total"] += 1
         if r["hr1_hit"]:
             identity_data[pid]["hits"] += 1
-        else:
-            identity_data[pid]["failures"].append(r)
 
     stats = []
     for pid, data in identity_data.items():
@@ -288,7 +312,6 @@ def compute_per_identity_stats(results: List[Dict]) -> List[Dict]:
             "hr1_hits": data["hits"],
             "hr1_failures": data["total"] - data["hits"],
             "hr1_rate": hr1_rate,
-            "failure_details": data["failures"],
         })
 
     # Ordenar por pior HR@1 rate, depois por mais falhas absolutas
@@ -315,6 +338,184 @@ def compute_confusion_pairs(results: List[Dict]) -> List[Dict]:
         })
 
     return pairs
+
+
+def compute_rank_distribution(failures: List[Dict]) -> Counter:
+    """
+    Conta quantas falhas têm o match correto em cada rank.
+    Antes era replicado em save_summary_json, generate_visual_report e
+    print_terminal_report — agora sai daqui em formato canônico (chaves int
+    para ranks numericos, string "not_in_top_k" para casos sem match).
+    """
+    dist: Counter = Counter()
+    for r in failures:
+        rk = r["correct_rank"]
+        dist[rk if rk is not None else "not_in_top_k"] += 1
+    return dist
+
+
+def sorted_rank_keys(dist: Counter) -> list:
+    """Ordena chaves de rank: numericas asc primeiro, depois 'not_in_top_k'."""
+    return sorted(dist.keys(), key=lambda x: (isinstance(x, str), x))
+
+
+# =========================================================================
+# Enriquecimento automático de atributos (para --manual-triage)
+# =========================================================================
+#
+# Estratégia: cada imagem que falhou recebe métricas em duas camadas.
+#
+#   1. cv2 (sempre disponível, barato): brightness, contrast, blur, face_area_ratio.
+#      Ajuda a separar falhas por *qualidade da imagem* sem precisar de modelo extra.
+#
+#   2. insightface FaceAnalysis (opt-out via --no-insightface-enrich):
+#      age, gender, yaw/pitch/roll, det_score. Ajuda a separar falhas por
+#      *atributos do rosto* (pose lateral, idade extrema, baixa confiança do detector).
+#
+# A separação cv2 vs insightface evita que problemas de pacote (ex: buffalo_l não
+# baixado, GPU indisponível) bloqueiem o enriquecimento básico.
+
+_face_app_singleton = None
+_face_app_unavailable = False  # Cache negativo: não tenta recarregar a cada chamada
+
+
+def _get_face_analysis_app():
+    """
+    Singleton FaceAnalysis (insightface) com módulos detection + genderage + landmark.
+    Reusa o pack buffalo_l já baixado em ~/.insightface/models/.
+    Retorna None se insightface não estiver disponível ou o pack faltar.
+    """
+    global _face_app_singleton, _face_app_unavailable
+    if _face_app_singleton is not None:
+        return _face_app_singleton
+    if _face_app_unavailable:
+        return None
+
+    try:
+        from insightface.app import FaceAnalysis
+        # CPUExecutionProvider: estável em qualquer ambiente; se tiver GPU,
+        # insightface usa CUDAExecutionProvider automaticamente quando disponível.
+        app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
+        # det_size baixo (320x320) acelera muito; resolução alta não ajuda em rostos
+        # já alinhados/cropados como os do dataset.
+        app.prepare(ctx_id=-1, det_size=(320, 320))
+        _face_app_singleton = app
+        return app
+    except Exception as e:
+        print(f"⚠ insightface FaceAnalysis indisponível ({type(e).__name__}: {e})")
+        print(f"  Continuando apenas com métricas cv2.")
+        _face_app_unavailable = True
+        return None
+
+
+def _compute_cv2_metrics(image_path: str) -> Dict[str, float]:
+    """
+    Métricas baratas via cv2. Retorna dict vazio se a imagem não puder ser lida.
+
+      - brightness: media do canal V (HSV). 0-255.
+      - contrast: desvio padrao do canal V. 0-255.
+      - blur: variancia da Laplaciana. Quanto MENOR, mais borrada.
+              Limiar empirico para "borrada": <100. Para "muito borrada": <30.
+    """
+    try:
+        import cv2
+    except ImportError:
+        return {}
+
+    try:
+        img = cv2.imread(image_path)
+        if img is None:
+            return {}
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        v = hsv[:, :, 2]
+        return {
+            "auto_brightness": float(np.mean(v)),
+            "auto_contrast": float(np.std(v)),
+            "auto_blur_var": float(cv2.Laplacian(gray, cv2.CV_64F).var()),
+            "auto_image_w": int(img.shape[1]),
+            "auto_image_h": int(img.shape[0]),
+        }
+    except Exception:
+        return {}
+
+
+def _compute_insightface_metrics(image_path: str, app) -> Dict[str, Any]:
+    """
+    Atributos de rosto via insightface. Retorna dict vazio se nenhuma face
+    detectada (caso interessante por si só — pode ser que a face que extraiu
+    o embedding original veio de um detector diferente / config diferente).
+
+    Retorna a face de MAIOR area do bbox (faz sentido em fotos com mais de
+    uma face residual, pega a principal).
+    """
+    if app is None:
+        return {}
+    try:
+        import cv2
+        img = cv2.imread(image_path)
+        if img is None:
+            return {}
+        faces = app.get(img)
+        if not faces:
+            return {"auto_insight_face_count": 0}
+
+        # Maior bbox por area
+        def bbox_area(f):
+            x1, y1, x2, y2 = f.bbox
+            return max(0.0, (x2 - x1)) * max(0.0, (y2 - y1))
+        face = max(faces, key=bbox_area)
+
+        x1, y1, x2, y2 = face.bbox
+        face_area = bbox_area(face)
+        img_area = float(img.shape[0] * img.shape[1])
+        face_area_ratio = face_area / img_area if img_area > 0 else 0.0
+
+        # face.pose (yaw, pitch, roll) em graus quando landmark_3d_68 esta presente
+        pose = getattr(face, "pose", None)
+        yaw = float(pose[0]) if pose is not None and len(pose) >= 3 else None
+        pitch = float(pose[1]) if pose is not None and len(pose) >= 3 else None
+        roll = float(pose[2]) if pose is not None and len(pose) >= 3 else None
+
+        # face.sex retorna 'M' / 'F' quando genderage esta no pack
+        sex = getattr(face, "sex", None)
+        age = getattr(face, "age", None)
+
+        return {
+            "auto_insight_face_count": len(faces),
+            "auto_det_score": float(face.det_score),
+            "auto_face_area_ratio": float(face_area_ratio),
+            "auto_age": int(age) if age is not None else None,
+            "auto_gender": sex,
+            "auto_yaw": yaw,
+            "auto_pitch": pitch,
+            "auto_roll": roll,
+        }
+    except Exception as e:
+        return {"auto_insight_error": f"{type(e).__name__}:{e}"}
+
+
+def enrich_failures(
+    failures: List[Dict],
+    use_insightface: bool = True,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Para cada falha, computa metricas cv2 + (opcional) insightface.
+    Indexa pelo query_image_path para join posterior com a CSV.
+    """
+    app = _get_face_analysis_app() if use_insightface else None
+
+    attrs_map: Dict[str, Dict[str, Any]] = {}
+    desc = "Enriquecendo (cv2+insightface)" if app else "Enriquecendo (cv2)"
+    for r in tqdm(failures, desc=desc, unit="img"):
+        path = r.get("query_image_path")
+        if not path:
+            continue
+        attrs = _compute_cv2_metrics(path)
+        if app is not None:
+            attrs.update(_compute_insightface_metrics(path, app))
+        attrs_map[path] = attrs
+    return attrs_map
 
 
 # =========================================================================
@@ -371,6 +572,93 @@ def save_confusion_pairs_csv(pairs: List[Dict], output_path: Path):
     print(f"✓ CSV confusion pairs salvo: {output_path} ({len(pairs)} pares)")
 
 
+# Colunas de marcacao manual: cada falha vira 1 linha. Voce abre no Excel/
+# LibreOffice/Google Sheets e marca "x" nas que se aplicam.
+#
+# Por que essa lista e nao outra?
+#   - Atributos de aparencia (barba, oculos, chapeu) costumam confundir modelos
+#     treinados em datasets balanceados.
+#   - Atributos de captura (pose, luz, blur, oclusao) capturam falhas de
+#     qualidade — frequentemente recuperaveis com pre-processamento.
+#   - Atributos demograficos (crianca, idoso) ajudam a detectar vies do modelo.
+#   - "duvidoso_humano" e o controle: se VOCE nao consegue identificar olhando
+#     as duas fotos, o modelo nao e culpado — e fronteira da tarefa.
+MANUAL_TRIAGE_COLUMNS = [
+    "barba",
+    "oculos",
+    "chapeu_bone",
+    "maquiagem_pesada",
+    "pose_lateral",        # rosto >30 graus de yaw
+    "rosto_inclinado",     # pitch ou roll alto
+    "luz_baixa",
+    "luz_lateral_dura",
+    "blur_movimento",
+    "oclusao_parcial",     # mao, microfone, outro objeto
+    "rosto_pequeno",       # rosto < 15% da imagem
+    "qualidade_baixa",     # compressao/ruido geral
+    "expressao_extrema",   # boca aberta, olhos fechados
+    "crianca",
+    "idoso",
+    "fundo_complexo",
+    "duvidoso_humano",     # voce mesmo tem duvida olhando as duas fotos
+    "outro",
+]
+
+
+def save_manual_triage_csv(
+    failures: List[Dict],
+    attrs_map: Dict[str, Dict[str, Any]],
+    output_path: Path,
+):
+    """
+    CSV otimizado para triagem manual de falhas.
+
+    Layout das colunas (esquerda -> direita):
+      1. Identificacao da falha (path, person, top1, similaridade, rank)
+      2. Colunas vazias para marcacao manual (barba, oculos, ...)
+      3. Colunas auto_* preenchidas pelo enriquecimento (brightness, blur,
+         age, gender, yaw, pitch, roll, det_score, ...)
+      4. Coluna 'observacao' livre
+
+    Falhas vem ordenadas por similaridade decrescente: as primeiras sao as
+    "erradas com mais confianca", justamente as mais diagnosticas para
+    descobrir vieses sistematicos.
+    """
+    rows = sorted(failures, key=lambda x: -(x["top1_similarity"] or 0))
+
+    id_cols = [
+        "query_image_path", "query_person_id",
+        "top1_person_id", "top1_image_path",
+        "top1_similarity", "correct_rank",
+    ]
+    auto_cols = [
+        "auto_brightness", "auto_contrast", "auto_blur_var",
+        "auto_image_w", "auto_image_h",
+        "auto_insight_face_count", "auto_det_score", "auto_face_area_ratio",
+        "auto_age", "auto_gender",
+        "auto_yaw", "auto_pitch", "auto_roll",
+        "auto_insight_error",
+    ]
+    fieldnames = id_cols + MANUAL_TRIAGE_COLUMNS + auto_cols + ["observacao"]
+
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in rows:
+            row = {k: r.get(k) for k in id_cols}
+            # Colunas manuais comecam vazias (voce preenche com "x")
+            for c in MANUAL_TRIAGE_COLUMNS:
+                row[c] = ""
+            # Colunas auto_*: vem do attrs_map indexado por path
+            attrs = attrs_map.get(r.get("query_image_path"), {})
+            for c in auto_cols:
+                row[c] = attrs.get(c, "")
+            row["observacao"] = ""
+            writer.writerow(row)
+
+    print(f"✓ CSV de triagem manual salvo: {output_path} ({len(rows)} falhas)")
+
+
 def save_summary_json(
     model_name: str,
     collection_name: str,
@@ -385,11 +673,7 @@ def save_summary_json(
     total_identities = len(identity_stats)
     identities_with_failures = sum(1 for s in identity_stats if s["hr1_failures"] > 0)
 
-    # Distribuição de rank do match correto nos failures
-    rank_distribution = Counter()
-    for r in failures:
-        rank = r["correct_rank"]
-        rank_distribution[rank if rank else "not_in_top_k"] += 1
+    rank_distribution = compute_rank_distribution(failures)
 
     summary = {
         "metadata": {
@@ -422,10 +706,7 @@ def save_summary_json(
             ],
         },
         "rank_distribution_of_failures": {
-            str(k): v for k, v in sorted(
-                rank_distribution.items(),
-                key=lambda x: (isinstance(x[0], str), x[0])  # numéricos primeiro
-            )
+            str(k): rank_distribution[k] for k in sorted_rank_keys(rank_distribution)
         },
         "top_confusion_pairs": [
             p for p in confusion_pairs[:20]
@@ -503,11 +784,7 @@ def generate_visual_report(
     hr1_pct = hits / total * 100 if total else 0
     fail_pct = len(failures) / total * 100 if total else 0
 
-    # Rank distribution
-    rank_dist = Counter()
-    for r in failures:
-        rk = r["correct_rank"]
-        rank_dist[rk if rk else "not_in_top_k"] += 1
+    rank_dist = compute_rank_distribution(failures)
 
     # Worst identities
     worst_ids = [s for s in identity_stats if s["hr1_failures"] > 0][:15]
@@ -647,7 +924,7 @@ def generate_visual_report(
       Rank 2 = &quot;quase acertou&quot;, not_in_top_k = caso grave.
     </p>""")
     html_parts.append("<table><tr><th>Rank</th><th>Count</th><th>%</th><th></th></tr>")
-    for rk in sorted(rank_dist.keys(), key=lambda x: (isinstance(x, str), x)):
+    for rk in sorted_rank_keys(rank_dist):
         cnt = rank_dist[rk]
         pct = cnt / len(failures) * 100 if failures else 0
         label = f"Rank {rk}" if isinstance(rk, int) else str(rk)
@@ -782,17 +1059,13 @@ def print_terminal_report(
     print(f"  HR@1 hits:            {hits} ({hits/total*100:.2f}%)")
     print(f"  HR@1 failures:        {len(failures_list)} ({len(failures_list)/total*100:.2f}%)")
 
-    # Rank distribution dos failures
-    rank_dist = Counter()
-    for r in failures_list:
-        rank = r["correct_rank"]
-        rank_dist[rank if rank else ">10"] = rank_dist.get(rank if rank else ">10", 0) + 1
+    rank_dist = compute_rank_distribution(failures_list)
 
     print(f"\n  Distribuição de rank do match correto (nos failures):")
-    for rank_key in sorted(rank_dist.keys(), key=lambda x: (isinstance(x, str), x)):
+    for rank_key in sorted_rank_keys(rank_dist):
         count = rank_dist[rank_key]
         pct = count / len(failures_list) * 100 if failures_list else 0
-        label = f"Rank {rank_key}" if isinstance(rank_key, int) else f"Rank {rank_key}"
+        label = f"Rank {rank_key}"
         print(f"    {label}: {count} ({pct:.1f}%)")
 
     # Piores identidades
@@ -850,7 +1123,8 @@ def main():
     args = parse_args()
 
     model_name = args.model
-    collection_name = args.collection or Config.get_collection_name(model_name)
+    # Convencao "uma collection por modelo": nome canonico, sem override.
+    collection_name = Config.get_collection_name(model_name)
     db_path = args.db_path or Config.MILVUS_DB_PATH
 
     # Diretório de saída
@@ -927,6 +1201,23 @@ def main():
             max_items=args.max_visual,
         )
         print(f"  - visual_report.html       → relatório visual com imagens")
+
+    # 8. Triagem manual + enriquecimento automático (opcional)
+    if args.manual_triage:
+        failures = [r for r in results if not r["hr1_hit"]]
+        if not failures:
+            print("\n✓ Nenhuma falha — nada a triagear.")
+        else:
+            print(f"\n[manual-triage] Enriquecendo {len(failures)} falhas...")
+            attrs_map = enrich_failures(
+                failures,
+                use_insightface=not args.no_insightface_enrich,
+            )
+            save_manual_triage_csv(
+                failures, attrs_map,
+                output_dir / "manual_triage.csv",
+            )
+            print(f"  - manual_triage.csv        → triagem manual + atributos auto_*")
 
 
 if __name__ == "__main__":
