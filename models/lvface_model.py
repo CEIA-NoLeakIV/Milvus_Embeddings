@@ -60,3 +60,44 @@ class LVFaceModel(BaseModel):
             mask_ratio=0.05,
             using_checkpoint=True
         )
+
+
+class LVFaceLModel(BaseModel):
+    """
+    Modelo LVFace (ViT-L) fine-tunado em dataset específico (ITI).
+
+    Arquitetura: Vision Transformer - vit_l_dp010_mask_005
+        - embed_dim: 768, depth: 24, num_heads: 12
+        - drop_path_rate: 0.1, mask_ratio: 0.05
+        - Entrada: 112x112 RGB
+        - Saída base: 512-d | Com TTA: 1024-d
+    """
+
+    def __init__(
+        self,
+        weight_path: Union[str, Path],
+        device: torch.device = None,
+        embedding_dim: int = 512,
+        use_tta: bool = True
+    ):
+        super().__init__(
+            model_name="lvface_l_iti",
+            weight_path=weight_path,
+            device=device,
+            embedding_dim=embedding_dim,
+            use_tta=use_tta
+        )
+
+    def _create_architecture(self) -> torch.nn.Module:
+        return VisionTransformer(
+            img_size=112,
+            patch_size=9,
+            num_classes=self.embedding_dim,
+            embed_dim=768,
+            depth=24,
+            num_heads=12,
+            drop_path_rate=0.1,
+            norm_layer="ln",
+            mask_ratio=0.05,
+            using_checkpoint=True
+        )

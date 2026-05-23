@@ -11,7 +11,7 @@ class Config:
     # ===========================================
     ROOT_DIR = Path(__file__).parent.parent
     DATA_DIR = ROOT_DIR / "data"
-    WEIGHTS_DIR = ROOT_DIR / "models" / "weights"
+    WEIGHTS_DIR = ROOT_DIR / "weights"
     UPLOADS_DIR = ROOT_DIR / "uploads"
     
     # Criar diretórios se não existirem
@@ -54,6 +54,8 @@ class Config:
         "topofr_r100_glint",
         "topofr_r200_glint",
         "lvface_b_glint",
+        "topofr_r100_iti",
+        "lvface_l_iti",
     ]
     DEFAULT_MODEL = "mobilenetv3_large"
     
@@ -69,6 +71,8 @@ class Config:
         "topofr_r100_glint":     WEIGHTS_DIR / "Glint360K_R100_TopoFR_9760.pt",
         "topofr_r200_glint":     WEIGHTS_DIR / "Glint360K_R200_TopoFR_9784.pt",
         "lvface_b_glint":        WEIGHTS_DIR / "LVFace-B_Glint360K.pt",
+        "topofr_r100_iti":       WEIGHTS_DIR / "topofr_r100_iti.pt",
+        "lvface_l_iti":          WEIGHTS_DIR / "lvface_l_iti.pt",
     }
     
     # Mapeamento de modelos para suas collections
@@ -83,6 +87,8 @@ class Config:
         "topofr_r100_glint":     "face_embeddings_topofr_r100_glint",
         "topofr_r200_glint":     "face_embeddings_topofr_r200_glint",
         "lvface_b_glint":        "face_embeddings_lvface_b_glint",
+        "topofr_r100_iti":       "face_embeddings_topofr_r100_iti",
+        "lvface_l_iti":          "face_embeddings_lvface_l_iti",
     }
     
     # Nome padrão da collection (para compatibilidade)
