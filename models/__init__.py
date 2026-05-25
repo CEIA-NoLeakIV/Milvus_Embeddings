@@ -10,7 +10,7 @@ from .base import BaseModel
 from .mobilenet_model import MobileNetModel, create_mobilenet_model
 from .cosface_model import CosFaceModel, create_cosface_model
 from .topofr_model import TopoFRModel
-from .lvface_model import LVFaceModel
+from .lvface_model import LVFaceModel, LVFaceLModel
 
 class ModelFactory:
     """
@@ -30,6 +30,8 @@ class ModelFactory:
         "topofr_r100_glint":     TopoFRModel,
         "topofr_r200_glint":     TopoFRModel,
         "lvface_b_glint":        LVFaceModel,
+        "topofr_r100_iti":       TopoFRModel,
+        "lvface_l_iti":          LVFaceLModel,
     }
     
     # Cache de modelos carregados
@@ -119,6 +121,7 @@ __all__ = [
     "CosFaceModel",
     "TopoFRModel",
     "LVFaceModel",
+    "LVFaceLModel",
     "ModelFactory",
     "create_mobilenet_model",
     "create_cosface_model",
