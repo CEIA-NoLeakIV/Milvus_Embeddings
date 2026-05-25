@@ -11,7 +11,7 @@ class Config:
     # ===========================================
     ROOT_DIR = Path(__file__).parent.parent
     DATA_DIR = ROOT_DIR / "data"
-    WEIGHTS_DIR = ROOT_DIR / "weights"
+    WEIGHTS_DIR = ROOT_DIR / "models" / "weights"
     UPLOADS_DIR = ROOT_DIR / "uploads"
     
     # Criar diretórios se não existirem
