@@ -34,11 +34,16 @@ import argparse
 import json
 import csv
 import base64
+import warnings
 import html as html_module
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict, Counter
 from typing import List, Dict, Any, Tuple, Optional
+
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"timm\..*")
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"insightface\..*")
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"face_module\..*")
 
 import numpy as np
 from tqdm import tqdm

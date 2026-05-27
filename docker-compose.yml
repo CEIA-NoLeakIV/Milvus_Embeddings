@@ -1,0 +1,40 @@
+x-common: &common
+  build: .
+  image: milvus-embeddings:repro
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+    - CUBLAS_WORKSPACE_CONFIG=:4096:8
+  volumes:
+    - ./data:/app/data
+    - ./models/weights:/app/models/weights
+    - ./lfw:/app/lfw
+    - ./dataset_ext_val_lfw:/app/dataset_ext_val_lfw
+    - ./uploads:/app/uploads
+    - ./analysis_results:/app/analysis_results
+    - ~/.insightface:/root/.insightface
+  # Para usar GPU: requer NVIDIA Container Toolkit instalado no host.
+  # Em CPU-only, basta comentar o bloco "deploy" abaixo.
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+services:
+  app:
+    <<: *common
+    container_name: milvus-embeddings
+    stdin_open: true
+    tty: true
+    # Sobrescreva ao rodar:
+    #   docker compose run --rm app python failure_analysis.py --model topofr_r100_glint
+    command: ["/bin/bash"]
+
+  streamlit:
+    <<: *common
+    container_name: milvus-embeddings-streamlit
+    ports:
+      - "8501:8501"
+    command: ["python", "run_streamlit.py", "--host", "0.0.0.0", "--port", "8501"]

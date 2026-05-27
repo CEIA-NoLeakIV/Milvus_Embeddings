@@ -1,15 +1,22 @@
-torch>=2.0.0
-torchvision>=0.15.0
-uniface>=1.1.0
-scikit-image>=0.21.0
-opencv-python>=4.8.0
-numpy>=1.24.0
-Pillow>=9.5.0
-pymilvus[milvus_lite]
-flask>=3.0.0
-flask-cors>=4.0.0
-werkzeug>=3.0.0
-streamlit>=1.32.0
-tqdm>=4.65.0
-python-dateutil>=2.8.2
-pytest>=7.0.0
+# PyTorch GPU wheels (CUDA 12.1). Em CPU-only, basta remover esta linha.
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+torch==2.10.0
+torchvision==0.25.0
+numpy==2.4.1
+Pillow==12.1.0
+opencv-python==4.13.0.90
+scikit-image==0.26.0
+pymilvus[milvus_lite]==2.6.7
+milvus-lite==2.5.1
+Flask==3.1.2
+flask-cors==6.0.2
+Werkzeug==3.1.5
+streamlit==1.53.1
+tqdm==4.67.1
+python-dateutil==2.9.0.post0
+pytest==9.0.2
+insightface==0.7.3
+onnxruntime==1.23.2
+uniface==2.2.1
+timm==1.0.25

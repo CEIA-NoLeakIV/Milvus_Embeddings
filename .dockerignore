@@ -1,0 +1,44 @@
+# Pastas grandes — montadas como volume em docker-compose.yml
+data/
+models/weights/
+lfw/
+dataset_ext_val_lfw/
+uploads/
+
+# Resultados de análise (gerados por failure_analysis.py / validar_dataset.py)
+failure_analysis_*/
+analysis_results/
+*.csv
+*.html
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtualenvs
+venv/
+venv_linux/
+.venv/
+
+# Git & IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+
+# Docker artifacts (não devem ir pro build context)
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Zone.Identifier (WSL)
+*:Zone.Identifier

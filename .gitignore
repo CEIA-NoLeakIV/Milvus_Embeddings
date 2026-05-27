@@ -19,8 +19,13 @@ models/weights/*.ckpt
 lfw/
 uploads/
 
+# Failure analysis outputs
+analysis_results/*
+!analysis_results/.gitkeep
+
 # Milvus
 *.db
+*.db.lock
 
 # Cache
 .pytest_cache/

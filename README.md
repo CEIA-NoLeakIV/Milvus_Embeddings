@@ -29,6 +29,37 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### Docker (alternativa, recomendado para reprodutibilidade)
+
+Garante o mesmo ambiente em qualquer máquina (mesmas versões de CUDA, torch,
+opencv etc), eliminando divergência numérica entre hosts.
+
+Pré-requisitos: Docker, Docker Compose, e — para GPU — NVIDIA Container Toolkit.
+
+```bash
+git clone <seu-repositorio>
+cd Milvus_Embeddings
+
+# 1. Coloque os pesos em models/weights/ e o dataset em lfw/ ou dataset_ext_val_lfw/
+# 2. Build da imagem
+docker compose build
+
+# 3. Popular o Milvus (gera data/milvus_face.db dentro do volume)
+docker compose run --rm app python populatemilvus.py --model topofr_r100_glint
+
+# 4. Rodar a análise de falhas (resultados persistem em ./analysis_results/)
+docker compose run --rm app python failure_analysis.py \
+  --model topofr_r100_glint \
+  --output-dir /app/analysis_results/topofr_r100_glint_$(date +%Y%m%d_%H%M%S)
+
+# 5. (opcional) Subir o Streamlit em http://localhost:8501
+docker compose up streamlit
+```
+
+Pesos, datasets, `data/milvus_face.db`, `uploads/` e `analysis_results/` ficam
+fora da imagem (são montados como volume), então não inflam o build e podem ser
+substituídos sem rebuild.
+
 ## Pesos dos Modelos
 
 Baixe os pesos em: **https://huggingface.co/NoLeak/Embeddings-Models/tree/main**
@@ -52,6 +83,12 @@ models/weights/
 > Você não precisa baixar todos — qualquer script que itera sobre modelos
 > (ex.: `validar_dataset.py`) usa `models_with_weights()` para descobrir
 > quais pesos estão presentes em disco e roda apenas esses.
+
+## Dataset de Validação
+
+Dataset externo (SanityFramework): **https://huggingface.co/datasets/NoLeak/SanityFramework/tree/main**
+
+Coloque em `dataset_ext_val_lfw/` (consumido por `populatemilvus.py --lfw-dir dataset_ext_val_lfw`).
 
 ## Detecção Facial
 
@@ -109,7 +146,8 @@ A API roda em `http://localhost:5000`
 ### Rodar o Streamlit
 
 ```bash
-python run_streamlit.py
+python run_streamlit.py            # venv local
+docker compose up streamlit        # via Docker
 ```
 
 Interface em `http://localhost:8501`
@@ -173,6 +211,7 @@ curl -X POST http://localhost:5000/api/embedding \
 │   ├── api.py
 │   ├── config.py                             # Modelos, pesos, collections, paths
 │   └── milvus_client.py                      # Wrapper Milvus (insert/search/purge)
+├── analysis_results/                         # Saídas de failure_analysis (CSV, JSON, HTML)
 ├── data/                                     # Banco Milvus (auto-gerado)
 ├── face_module/                              # Forks adaptados: TopoFR, LVFace, TransFace
 ├── models/
@@ -187,6 +226,8 @@ curl -X POST http://localhost:5000/api/embedding \
 ├── populatemilvus.py                         # Popular Milvus (1 collection/modelo, destrutivo)
 ├── preprocessing.py                          # Pré-processamento centralizado
 ├── requirements.txt                          # Lista com dependências necessárias
+├── Dockerfile                                # Imagem reprodutível (Python 3.11 + CUDA 12.1)
+├── docker-compose.yml                        # Orquestração com volumes (pesos/datasets/db)
 ├── run_api.py                                # Iniciar API Flask
 ├── run_streamlit.py                          # Iniciar Streamlit
 └── validar_dataset.py                        # Popular + avaliar modelos (leave-one-out, HR@1/5, MRR, AUC)
