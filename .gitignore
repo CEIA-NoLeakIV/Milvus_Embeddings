@@ -12,7 +12,7 @@ venv_linux/
 .vscode/
 
 # Model Weights
-models/weights/*.ckpt
+models/weights/*
 !models/weights/.gitkeep
 
 # Datasets
