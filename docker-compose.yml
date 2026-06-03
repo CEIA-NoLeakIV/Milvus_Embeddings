@@ -11,7 +11,6 @@ x-common: &common
     - ./dataset_ext_val_lfw:/app/dataset_ext_val_lfw
     - ./uploads:/app/uploads
     - ./analysis_results:/app/analysis_results
-    - ~/.insightface:/root/.insightface
   # Para usar GPU: requer NVIDIA Container Toolkit instalado no host.
   # Em CPU-only, basta comentar o bloco "deploy" abaixo.
   deploy:
